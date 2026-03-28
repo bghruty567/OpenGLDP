@@ -1,0 +1,20 @@
+# vtk DataFile Version 3.0
+structured grid test
+ASCII
+DATASET STRUCTURED_GRID
+DIMENSIONS 3 3 2
+POINTS 18 float
+0 0 0  1 0 0  2 0 0
+0 1 0  1 1 0  2 1 0
+0 2 0  1 2 0  2 2 0
+0 0 1  1 0 1  2 0 1
+0 1 1  1 1 1  2 1 1
+0 2 1  1 2 1  2 2 1
+POINT_DATA 18
+SCALARS phi float 1
+LOOKUP_TABLE default
+0 1 2  2 3 4  4 5 6  3 4 5  5 6 7  7 8 9
+CELL_DATA 4
+SCALARS psi float 1
+LOOKUP_TABLE default
+10 11 12 13

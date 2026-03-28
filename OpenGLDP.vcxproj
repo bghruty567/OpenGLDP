@@ -128,11 +128,30 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="DataObject.cpp" />
     <ClCompile Include="FileName.cpp" />
     <ClCompile Include="glad.c" />
+    <ClCompile Include="GLGradientEngine.cpp" />
+    <ClCompile Include="TestConvert1.cpp" />
+    <ClCompile Include="TestGradient.cpp" />
+    <ClCompile Include="VTKDataConverter.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="FD.glsl" />
+    <None Include="RGGradient.glsl" />
+    <None Include="ShipHull_0.vtk" />
+    <None Include="structured_grid.vtk" />
+    <None Include="test_uGrid.vtk" />
     <None Include="uGridEx.vtk" />
+    <None Include="unstructured_tet.vtk" />
+    <None Include="USGGradient.glsl" />
+    <None Include="WLS.glsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DataObject.h" />
+    <ClInclude Include="GLGradientEngine.h" />
+    <ClInclude Include="gl_context_utils.h" />
+    <ClInclude Include="VTKDataConverter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

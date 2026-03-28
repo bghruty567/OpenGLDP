@@ -21,8 +21,45 @@
     <ClCompile Include="glad.c">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="VTKDataConverter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="DataObject.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="TestConvert1.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="GLGradientEngine.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="TestGradient.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="uGridEx.vtk" />
+    <None Include="RGGradient.glsl" />
+    <None Include="USGGradient.glsl" />
+    <None Include="test_uGrid.vtk" />
+    <None Include="structured_grid.vtk" />
+    <None Include="unstructured_tet.vtk" />
+    <None Include="FD.glsl" />
+    <None Include="WLS.glsl" />
+    <None Include="ShipHull_0.vtk" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="VTKDataConverter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="DataObject.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="GLGradientEngine.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_context_utils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
