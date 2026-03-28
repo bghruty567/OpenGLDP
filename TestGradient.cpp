@@ -159,7 +159,7 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 #include "gl_context_utils.h"
 
 int main(int argc, char** argv) {
-    std::string path = "uGridEx.vtk";
+    std::string path = "Data\\uGridEx.vtk";
     if (argc >= 2) path = argv[1];
     auto ug = loadUG(path);               // vtkSmartPointer
     if (!ug) { return 1; }
@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
     glw->MakeCurrent();
 
     GLGradientEngine eng;
-    eng.setShaderDir("C:\\Users\\lenovo\\Desktop\\bishe\\myProj\\OpenGLDP");
+    eng.setShaderDir("Shaders");
     if (!eng.init()) { std::cerr << "shader init failed" << std::endl; return 4; }
     GLGradientEngine::WLSParams wp; wp.wExponent = 2.0f; wp.lambda = 1e-6f;
     std::vector<float> grad_gl;

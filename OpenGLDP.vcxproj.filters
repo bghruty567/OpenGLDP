@@ -38,15 +38,33 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="uGridEx.vtk" />
-    <None Include="RGGradient.glsl" />
-    <None Include="USGGradient.glsl" />
-    <None Include="test_uGrid.vtk" />
-    <None Include="structured_grid.vtk" />
-    <None Include="unstructured_tet.vtk" />
-    <None Include="FD.glsl" />
-    <None Include="WLS.glsl" />
-    <None Include="ShipHull_0.vtk" />
+    <None Include="Shaders\WLS.glsl">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Shaders\USGGradient.glsl">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Shaders\RGGradient.glsl">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Shaders\FD.glsl">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Data\ShipHull_0.vtk">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Data\structured_grid.vtk">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Data\test_uGrid.vtk">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Data\uGridEx.vtk">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="Data\unstructured_tet.vtk">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VTKDataConverter.h">

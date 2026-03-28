@@ -137,15 +137,15 @@
     <ClCompile Include="VTKDataConverter.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="FD.glsl" />
-    <None Include="RGGradient.glsl" />
-    <None Include="ShipHull_0.vtk" />
-    <None Include="structured_grid.vtk" />
-    <None Include="test_uGrid.vtk" />
-    <None Include="uGridEx.vtk" />
-    <None Include="unstructured_tet.vtk" />
-    <None Include="USGGradient.glsl" />
-    <None Include="WLS.glsl" />
+    <None Include="Shaders\FD.glsl" />
+    <None Include="Shaders\RGGradient.glsl" />
+    <None Include="Data\ShipHull_0.vtk" />
+    <None Include="Data\structured_grid.vtk" />
+    <None Include="Data\test_uGrid.vtk" />
+    <None Include="Data\uGridEx.vtk" />
+    <None Include="Data\unstructured_tet.vtk" />
+    <None Include="Shaders\USGGradient.glsl" />
+    <None Include="Shaders\WLS.glsl" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DataObject.h" />
