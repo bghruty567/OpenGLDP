@@ -137,6 +137,7 @@
     <ClCompile Include="VTKDataConverter.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Data\hexa.vtk" />
     <None Include="Data\SampleStructGrid.vtk" />
     <None Include="Shaders\FD.glsl" />
     <None Include="Shaders\RGGradient.glsl" />

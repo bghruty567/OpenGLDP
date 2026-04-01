@@ -31,7 +31,7 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 
 int main(int argc, char** argv)
 {
-    std::string path = "Data\\uGridEx.vtk";
+    std::string path = "Data\\hexa.vtk";
     if (argc >= 2) path = argv[1];
 
     vtkNew<vtkDataSetReader> r;
@@ -63,9 +63,28 @@ int main(int argc, char** argv)
         gf->SetResultArrayName("grad_vtk");
         gf->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, arrName.c_str());
         gf->SetInputData(ds);
-        auto t0 = std::chrono::high_resolution_clock::now();
-        gf->Update();
-        auto t1 = std::chrono::high_resolution_clock::now();
+
+        const int warmup = 1;
+        const int reps = 5;
+
+        for (int w = 0; w < warmup; ++w) {
+            gf->Modified();
+            gf->Update();
+        }
+
+        double sum_ms = 0.0;
+        double min_ms = std::numeric_limits<double>::max();
+
+        for (int r = 0; r < reps; ++r) {
+            gf->Modified();
+            auto t0 = std::chrono::high_resolution_clock::now();
+            gf->Update();
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            sum_ms += ms;
+            if (ms < min_ms) min_ms = ms;
+        }
+
         vtkDataSet* out = vtkDataSet::SafeDownCast(gf->GetOutput());
         auto* ga = out->GetPointData()->GetArray("grad_vtk");
         vtkIdType n = out->GetNumberOfPoints();
@@ -76,8 +95,9 @@ int main(int argc, char** argv)
                 grad_vtk[size_t(i) * size_t(vtkOutComps) + c] = float(ga->GetComponent(i, c));
             }
         }
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-        std::cout << "VTK_time_ms=" << ms << std::endl;
+
+        std::cout << "VTK_time_ms_avg=" << (sum_ms / reps)
+            << " VTK_time_ms_min=" << min_ms << std::endl;
     }
 
     auto glw = createPersistentGLContext(false);
@@ -128,19 +148,93 @@ int main(int argc, char** argv)
         }
         p.spacing[0] = sp[0]; p.spacing[1] = sp[1]; p.spacing[2] = sp[2];
         p.origin[0] = 0; p.origin[1] = 0; p.origin[2] = 0;
-        ok = eng.computeRegularFD(obj.points, arrPtr->data, p, grad_gl);
+        //ok = eng.computeRegularFD(obj.points, arrPtr->data, p, grad_gl);
+        eng.setEnableGpuTiming(true);
+
+        const int warmup = 1;
+        const int reps = 5;
+
+        std::vector<float> grad_tmp;
+        bool ok = false;
+
+        // 预热
+        for (int w = 0; w < warmup; ++w) {
+            ok = eng.computeRegularFD(obj.points, arrPtr->data, p, grad_tmp);
+            if (!ok) { std::cerr << "compute failed (warmup)\n"; return 9; }
+        }
+
+        // 多次测量（端到端 & GPU）
+        double wall_sum = 0.0, wall_min = std::numeric_limits<double>::max();
+        double gpu_sum = 0.0, gpu_min = std::numeric_limits<double>::max();
+
+        for (int r = 0; r < reps; ++r) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            ok = eng.computeRegularFD(obj.points, arrPtr->data, p, grad_tmp);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            if (!ok) { std::cerr << "compute failed\n"; return 9; }
+
+            double wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            wall_sum += wall_ms; wall_min = std::min(wall_min, wall_ms);
+
+            double gpu_ms = eng.getLastGpuTimeMs();
+            gpu_sum += gpu_ms; gpu_min = std::min(gpu_min, gpu_ms);
+        }
+
+        grad_gl.swap(grad_tmp);
+
+        std::cout << "GL_wall_ms_avg=" << (wall_sum / reps)
+            << " GL_wall_ms_min=" << wall_min << std::endl;
+        std::cout << "GL_gpu_ms_avg=" << (gpu_sum / reps)
+            << " GL_gpu_ms_min=" << gpu_min << std::endl;
     }
     else {
         GLGradientEngine::WLSParams wp;
         wp.wExponent = 1.0f;
         wp.lambda = 1e-2f;
-        ok = eng.computeUnstructuredWLS(obj.points, obj.pointNeighborOffsets, obj.pointNeighbors, arrPtr->data, wp, grad_gl);
+        //ok = eng.computeUnstructuredWLS(obj.points, obj.pointNeighborOffsets, obj.pointNeighbors, arrPtr->data, wp, grad_gl);
+        eng.setEnableGpuTiming(true);
+
+        const int warmup = 1;
+        const int reps = 5;
+
+        std::vector<float> grad_tmp;
+        bool ok = false;
+
+        // 预热
+        for (int w = 0; w < warmup; ++w) {
+            ok = eng.computeUnstructuredWLS(obj.points, obj.pointNeighborOffsets, obj.pointNeighbors, arrPtr->data, wp, grad_tmp);
+            if (!ok) { std::cerr << "compute failed (warmup)\n"; return 9; }
+        }
+
+        // 多次测量（端到端 & GPU）
+        double wall_sum = 0.0, wall_min = std::numeric_limits<double>::max();
+        double gpu_sum = 0.0, gpu_min = std::numeric_limits<double>::max();
+
+        for (int r = 0; r < reps; ++r) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            ok = eng.computeUnstructuredWLS(obj.points, obj.pointNeighborOffsets, obj.pointNeighbors, arrPtr->data, wp, grad_tmp);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            if (!ok) { std::cerr << "compute failed\n"; return 9; }
+
+            double wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            wall_sum += wall_ms; wall_min = std::min(wall_min, wall_ms);
+
+            double gpu_ms = eng.getLastGpuTimeMs();
+            gpu_sum += gpu_ms; gpu_min = std::min(gpu_min, gpu_ms);
+        }
+
+        grad_gl.swap(grad_tmp);
+
+        std::cout << "GL_wall_ms_avg=" << (wall_sum / reps)
+            << " GL_wall_ms_min=" << wall_min << std::endl;
+        std::cout << "GL_gpu_ms_avg=" << (gpu_sum / reps)
+            << " GL_gpu_ms_min=" << gpu_min << std::endl;
     }
 
-    auto t1 = std::chrono::high_resolution_clock::now();
-    if (!ok) { std::cerr << "compute failed\n"; return 9; }
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cout << "GL_time_ms=" << ms << std::endl;
+   // auto t1 = std::chrono::high_resolution_clock::now();
+    //if (!ok) { std::cerr << "compute failed\n"; return 9; }
+    //auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    //std::cout << "GL_time_ms=" << ms << std::endl;
 
     if (grad_gl.size() != N * size_t(3 * compsIn)) { std::cerr << "gl size mismatch\n"; return 10; }
     if (vtkOutComps != 3 * compsIn) { std::cerr << "vtk comps mismatch\n"; return 11; }

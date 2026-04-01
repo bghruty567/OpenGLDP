@@ -165,8 +165,20 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     GLuint gx = (p.dims[0] + 7) / 8;
     GLuint gy = (p.dims[1] + 7) / 8;
     GLuint gz = (p.dims[2] + 7) / 8;
+    if (enableGpuTiming) {
+        if (timeQuery == 0) glGenQueries(1, &timeQuery);
+        glBeginQuery(GL_TIME_ELAPSED, timeQuery);
+    }
+
     glDispatchCompute(gx, gy, gz);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    if (enableGpuTiming) {
+        glEndQuery(GL_TIME_ELAPSED);
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
+        lastGpuTimeMs = static_cast<double>(ns) / 1e6; // ns -> ms
+    }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());
@@ -248,12 +260,37 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
 
     GLuint gx = (GLuint)((np + 255) / 256);
 
+    if (enableGpuTiming) {
+        if (timeQuery == 0) glGenQueries(1, &timeQuery);
+        glBeginQuery(GL_TIME_ELAPSED, timeQuery);
+    }
+
     glDispatchCompute(gx, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    if (enableGpuTiming) {
+        glEndQuery(GL_TIME_ELAPSED);
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
+        lastGpuTimeMs = static_cast<double>(ns) / 1e6; // ns -> ms
+    }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo4);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         outGrad.size() * sizeof(float), outGrad.data());
 
     return true;
+}
+
+void GLGradientEngine::setEnableGpuTiming(bool on)
+{
+    enableGpuTiming = on;
+    if (enableGpuTiming && timeQuery == 0) {
+        glGenQueries(1, &timeQuery);
+    }
+}
+
+double GLGradientEngine::getLastGpuTimeMs() const
+{
+    return lastGpuTimeMs;
 }

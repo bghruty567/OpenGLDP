@@ -68,6 +68,9 @@
     <None Include="Data\SampleStructGrid.vtk">
       <Filter>资源文件</Filter>
     </None>
+    <None Include="Data\hexa.vtk">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VTKDataConverter.h">
