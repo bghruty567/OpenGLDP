@@ -291,8 +291,8 @@
 //}
 //
 //int main(int argc, char** argv) {
-//    std::string p1 = "structured_grid.vtk";
-//    std::string p2 = "unstructured_tet.vtk";
+//    std::string p1 = "Data\\structured_grid.vtk";
+//    std::string p2 = "Data\\ShipHull_0.vtk";
 //    if (argc >= 2) p1 = argv[1];
 //    if (argc >= 3) p2 = argv[2];
 //    int r1 = runStructuredGridTest(p1);

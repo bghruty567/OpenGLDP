@@ -115,5 +115,7 @@ public:
 	* @brief 转换单元中心点的邻域信息，邻域由单元的邻域单元的中心点组成，使用KNN算法计算每个单元中心点的邻域单元中心点
     */
 	int convertCellNeighborsByKNN(int k);
+
+    int convertPointNeighborsRobust(int minK, int knnK);
 };
 

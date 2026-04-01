@@ -251,7 +251,9 @@ int VTKDataConverter ::convertUnstructuredGrid() {
     this->convertPoints();
     this->convertDataArrays();
     this->convertPointInCellNeighbors();
-    this->convertPointNeighborsByKNN(5);
+    //this->convertPointNeighborsByKNN(4);
+    this->convertPointNeighborsRobust(4,24);
+	//this->convertPointNeighbors();
     this->convertCellCenters();
     this->convertCell();
     this->convertCellNeighborsByKNN(5);
@@ -391,5 +393,61 @@ int VTKDataConverter::convertCellNeighborsByKNN(int K) {
     return 1;
 }
 
+int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
+{
+    vtkIdType numPoints = this->vtkData->GetNumberOfPoints();
+    if (numPoints <= 0) return 0;
+
+    vtkNew<vtkStaticCellLinks> cellLinks;
+    cellLinks->SetDataSet(this->vtkData);
+    cellLinks->BuildLinks();
+
+    vtkNew<vtkKdTreePointLocator> locator;
+    locator->SetDataSet(this->vtkData);
+    locator->BuildLocator();
+
+    this->internalData->pointNeighbors.clear();
+    this->internalData->pointNeighborOffsets.clear();
+    this->internalData->pointNeighborOffsets.reserve(static_cast<size_t>(numPoints) + 1);
+    this->internalData->pointNeighborOffsets.push_back(0);
+
+    vtkNew<vtkIdList> ids;
+
+    for (vtkIdType ptId = 0; ptId < numPoints; ++ptId)
+    {
+        std::set<int> nbset;
+
+        vtkIdType numCells = cellLinks->GetNumberOfCells(ptId);
+        const vtkIdType* cellIds = cellLinks->GetCells(ptId);
+        for (vtkIdType i = 0; i < numCells; ++i)
+        {
+            vtkCell* cell = this->vtkData->GetCell(cellIds[i]);
+            vtkIdList* pointIds = cell->GetPointIds();
+            for (vtkIdType j = 0; j < pointIds->GetNumberOfIds(); ++j)
+            {
+                vtkIdType q = pointIds->GetId(j);
+                if (q != ptId) nbset.insert(static_cast<int>(q));
+            }
+        }
+
+        if ((int)nbset.size() < minK)
+        {
+            double qpos[3]; this->vtkData->GetPoint(ptId, qpos);
+            locator->FindClosestNPoints(knnK + 1, qpos, ids);
+            for (vtkIdType i = 0; i < ids->GetNumberOfIds(); ++i)
+            {
+                vtkIdType q = ids->GetId(i);
+                if (q == ptId) continue;
+                nbset.insert(static_cast<int>(q));
+                if ((int)nbset.size() >= minK) break;
+            }
+        }
+
+        for (int q : nbset) this->internalData->pointNeighbors.push_back(q);
+        int cur = static_cast<int>(this->internalData->pointNeighborOffsets.back());
+        this->internalData->pointNeighborOffsets.push_back(cur + static_cast<int>(nbset.size()));
+    }
+    return 1;
+}
 //int VTKDataConverter::convertInternalToVTK() {
 //}
