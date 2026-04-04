@@ -6,6 +6,14 @@
 #include <vtkKdTreePointLocator.h>
 #include <iostream>
 #include <set>
+#include <vtkFloatArray.h>
+#include <vtkPointData.h>
+#include <vtkCellData.h>
+#include <vtkStructuredGrid.h>
+#include <vtkUnstructuredGrid.h>
+#include <vtkCell.h>
+#include <vtkCellType.h>
+#include <vtkSmartPointer.h>
 
 VTKDataConverter::VTKDataConverter() {}
 
@@ -393,6 +401,7 @@ int VTKDataConverter::convertCellNeighborsByKNN(int K) {
     return 1;
 }
 
+
 int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
 {
     vtkIdType numPoints = this->vtkData->GetNumberOfPoints();
@@ -449,5 +458,89 @@ int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
     }
     return 1;
 }
-//int VTKDataConverter::convertInternalToVTK() {
-//}
+int VTKDataConverter::convertInternalToVTK()
+{
+    if (!this->internalData) return 0;
+
+    vtkNew<vtkPoints> pts;
+    const size_t np = this->internalData->pointCount();
+    pts->SetNumberOfPoints(static_cast<vtkIdType>(np));
+    for (vtkIdType i = 0; i < static_cast<vtkIdType>(np); ++i) {
+        pts->SetPoint(
+            i,
+            this->internalData->points[size_t(i) * 3 + 0],
+            this->internalData->points[size_t(i) * 3 + 1],
+            this->internalData->points[size_t(i) * 3 + 2]
+        );
+    }
+
+    vtkDataSet* out = nullptr;
+
+    if (this->internalData->gridType == DATA_OBJECT_TYPE_RegularGrid) {
+        vtkStructuredGrid* sg = vtkStructuredGrid::New();
+        sg->SetDimensions(
+            this->internalData->dimensions[0],
+            this->internalData->dimensions[1],
+            this->internalData->dimensions[2]
+        );
+        sg->SetPoints(pts);
+        out = sg;
+    }
+    else if (this->internalData->gridType == DATA_OBJECT_TYPE_UNSTRUCTURED) {
+        vtkUnstructuredGrid* ug = vtkUnstructuredGrid::New();
+        ug->SetPoints(pts);
+
+        const size_t nc = this->internalData->cellCount();
+        for (size_t c = 0; c < nc; ++c) {
+            int b = this->internalData->cellOffsets[c];
+            int e = this->internalData->cellOffsets[c + 1];
+            if (e <= b) continue;
+
+            std::vector<vtkIdType> ids;
+            ids.reserve(static_cast<size_t>(e - b));
+            for (int k = b; k < e; ++k) {
+                ids.push_back(static_cast<vtkIdType>(this->internalData->cells[k]));
+            }
+
+            int cellType = VTK_POLY_VERTEX;
+            if (c < this->internalData->cellTypes.size()) {
+                cellType = this->internalData->cellTypes[c];
+            }
+            ug->InsertNextCell(cellType, static_cast<vtkIdType>(ids.size()), ids.data());
+        }
+        out = ug;
+    }
+    else {
+        return 0;
+    }
+
+    const vtkIdType outNP = out->GetNumberOfPoints();
+    const vtkIdType outNC = out->GetNumberOfCells();
+
+    for (const auto& a : this->internalData->dataArrays) {
+        if (a.numComponents <= 0) continue;
+        if (a.data.empty()) continue;
+
+        vtkNew<vtkFloatArray> arr;
+        arr->SetName(a.name.c_str());
+        arr->SetNumberOfComponents(a.numComponents);
+        const vtkIdType tuples = static_cast<vtkIdType>(a.data.size() / size_t(a.numComponents));
+        arr->SetNumberOfTuples(tuples);
+
+        for (vtkIdType t = 0; t < tuples; ++t) {
+            for (int c = 0; c < a.numComponents; ++c) {
+                arr->SetComponent(t, c, a.data[size_t(t) * size_t(a.numComponents) + size_t(c)]);
+            }
+        }
+
+        if (a.dataType == POINT_DATA && tuples == outNP) {
+            out->GetPointData()->AddArray(arr);
+        }
+        else if (a.dataType == CELL_DATA && tuples == outNC) {
+            out->GetCellData()->AddArray(arr);
+        }
+    }
+
+    this->vtkData = out;
+    return 1;
+}

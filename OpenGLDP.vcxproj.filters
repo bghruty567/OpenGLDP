@@ -36,6 +36,9 @@
     <ClCompile Include="TestGradient.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="CAEProcessingFacade.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\WLS.glsl">
@@ -71,6 +74,11 @@
     <None Include="Data\hexa.vtk">
       <Filter>资源文件</Filter>
     </None>
+    <None Include="Data\1_0.vtk" />
+    <None Include="doc\1.md" />
+    <None Include="doc\接口文档.md" />
+    <None Include="doc\api.md" />
+    <None Include="doc\当前进度.md" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VTKDataConverter.h">
@@ -83,6 +91,15 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="gl_context_utils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="CAEInterfaceTypes.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="CAEProcessingFacade.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenGLManager.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

@@ -128,6 +128,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="CAEProcessingFacade.cpp" />
     <ClCompile Include="DataObject.cpp" />
     <ClCompile Include="FileName.cpp" />
     <ClCompile Include="glad.c" />
@@ -137,8 +138,13 @@
     <ClCompile Include="VTKDataConverter.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Data\1_0.vtk" />
     <None Include="Data\hexa.vtk" />
     <None Include="Data\SampleStructGrid.vtk" />
+    <None Include="doc\1.md" />
+    <None Include="doc\api.md" />
+    <None Include="doc\当前进度.md" />
+    <None Include="doc\接口文档.md" />
     <None Include="Shaders\FD.glsl" />
     <None Include="Shaders\RGGradient.glsl" />
     <None Include="Data\ShipHull_0.vtk" />
@@ -150,9 +156,12 @@
     <None Include="Shaders\WLS.glsl" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CAEInterfaceTypes.h" />
+    <ClInclude Include="CAEProcessingFacade.h" />
     <ClInclude Include="DataObject.h" />
     <ClInclude Include="GLGradientEngine.h" />
     <ClInclude Include="gl_context_utils.h" />
+    <ClInclude Include="OpenGLManager.h" />
     <ClInclude Include="VTKDataConverter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

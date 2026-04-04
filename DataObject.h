@@ -64,7 +64,11 @@ public:
 	std::vector<int> cellNeighborsOffsets;//单元邻域偏移信息[0,3...]索引与单元中心坐标对应
 	int dimensions[3]; // 规则网格的维度信息(仅规则网格设置)
 	
-
+	DataArray* findDataArray(const std::string& name, DataArrayType type);
+	const DataArray* findDataArray(const std::string& name, DataArrayType type) const;
+	bool upsertDataArray(const std::string& name, const std::vector<float>& data, int numComponents, DataArrayType type);
+	size_t pointCount() const;
+	size_t cellCount() const;
     //bool hasGhostData;
     //std::vector<unsigned char> ghostValues;
 
