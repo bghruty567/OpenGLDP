@@ -20,11 +20,13 @@ bool DataObject::upsertDataArray(const std::string& name, const std::vector<floa
 {
     if (numComponents <= 0) return false;
     DataArray* old = findDataArray(name, type);
+    //∏¸–¬
     if (old) {
         old->data = data;
         old->numComponents = numComponents;
         return true;
     }
+    //≤Â»Î
     DataArray a;
     a.name = name;
     a.data = data;

@@ -11,13 +11,25 @@
 #include <vtkSmartPointer.h>
 #include <vtkDataSet.h>
 
+/*
+* @brief CAEProcessingFacade类提供了一个统一的接口，用于加载VTK数据集、查询数据集信息、计算梯度以及导出结果等功能
+*/
 class CAEProcessingFacade {
 public:
     CAEProcessingFacade();
     ~CAEProcessingFacade();
 
+    /*
+	* @brief 初始化CAEProcessingFacade，设置着色器目录并初始化GLGradientEngine
+    */
     bool initialize(const std::string& shaderDir);
+    /*
+	* @brief 从VTK文件加载数据集，返回一个唯一的字符串ID用于后续操作
+    */
     std::string loadDatasetFromVTKFile(const std::string& filePath);
+    /*
+	* @brief 列出所有加载的数据集的摘要信息，包括数据集ID、显示名称、网格类型、点数、单元数和字段信息等
+    */
     std::vector<CAEDatasetSummary> listDatasets() const;
     bool getDatasetSummary(const std::string& datasetId, CAEDatasetSummary& outSummary) const;
     bool listFields(const std::string& datasetId, CAEFieldAssociation assoc, std::vector<CAEFieldInfo>& outFields) const;

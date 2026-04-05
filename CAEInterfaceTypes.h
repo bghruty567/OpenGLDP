@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 
+
 enum class CAEFieldAssociation {
     Point = 0,
     Cell = 1
@@ -19,6 +20,7 @@ enum class CAEGradientMethod {
     WeightedLeastSquares = 2
 };
 
+
 struct CAEFieldInfo {
     std::string name;
     CAEFieldAssociation association = CAEFieldAssociation::Point;
@@ -27,8 +29,8 @@ struct CAEFieldInfo {
 };
 
 struct CAEGradientRequest {
-    std::string datasetId;
-    std::string inputArrayName;
+	std::string datasetId;///数据集ID
+	std::string inputArrayName;//输入数组名称
     CAEFieldAssociation association = CAEFieldAssociation::Point;
     CAEGradientMethod method = CAEGradientMethod::Auto;
     float wlsExponent = 1.0f;

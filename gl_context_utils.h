@@ -6,6 +6,9 @@
 #include <glad/glad.h>
 #include <iostream>
 
+/*
+* @brief 创建一个持久化的OpenGL上下文，尝试离屏渲染，如果失败则回退到屏幕渲染
+*/
 inline vtkSmartPointer<vtkOpenGLRenderWindow> createPersistentGLContext(bool offscreen = true) {
     vtkNew<vtkRenderer> ren;
     vtkNew<vtkRenderWindow> win;

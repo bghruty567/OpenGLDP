@@ -36,7 +36,7 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 
 int main(int argc, char** argv)
 {
-    std::string path = "Data\\uGridEx.vtk";
+    std::string path = "Data\\ShipHull_0.vtk";
     if (argc >= 2) path = argv[1];
 
     {
@@ -198,48 +198,65 @@ int main(int argc, char** argv)
             std::cout << "]\n";
         }
 
-        vtkSmartPointer<vtkDataSet> showDs;
-        if (facade.exportDatasetToVTK(dsId, showDs)) {
-            //vtkDataSet* showDs = conv.vtkData;
+    //    std::vector<float> mag_gl(nTuple, 0.0f), mag_vtk(nTuple, 0.0f);
+    //    for (size_t i = 0; i < nTuple; ++i) {
+    //        double s1 = 0.0, s2 = 0.0;
+    //        for (int c = 0; c < nComp; ++c) {
+    //            size_t gi = i * size_t(3 * nComp) + c * 3;
+    //            size_t vi = i * size_t(vtkOutComps) + c * 3;
+    //            double gx1 = grad_gl[gi + 0], gy1 = grad_gl[gi + 1], gz1 = grad_gl[gi + 2];
+    //            double gx2 = grad_vtk[vi + 0], gy2 = grad_vtk[vi + 1], gz2 = grad_vtk[vi + 2];
+    //            s1 += gx1 * gx1 + gy1 * gy1 + gz1 * gz1;
+    //            s2 += gx2 * gx2 + gy2 * gy2 + gz2 * gz2;
+    //        }
+    //        mag_gl[i] = static_cast<float>(std::sqrt(s1));
+    //        mag_vtk[i] = static_cast<float>(std::sqrt(s2));
+    //    }
+    //    obj.upsertDataArray("grad_gl_mag", mag_gl, 1, POINT_DATA);
+    //    obj.upsertDataArray("grad_vtk_mag", mag_vtk, 1, POINT_DATA);
 
-            vtkNew<vtkDataSetMapper> m1;
-            m1->SetInputData(showDs);
-            m1->SetScalarModeToUsePointFieldData();
-            m1->SelectColorArray("grad_gl_mag");
-            m1->ScalarVisibilityOn();
+    //    vtkSmartPointer<vtkDataSet> showDs;
+    //    if (facade.exportDatasetToVTK(dsId, showDs)) {
+    //        //vtkDataSet* showDs = conv.vtkData;
 
-            vtkNew<vtkDataSetMapper> m2;
-            m2->SetInputData(showDs);
-            m2->SetScalarModeToUsePointFieldData();
-            m2->SelectColorArray("grad_vtk_mag");
-            m2->ScalarVisibilityOn();
+    //        vtkNew<vtkDataSetMapper> m1;
+    //        m1->SetInputData(showDs);
+    //        m1->SetScalarModeToUsePointFieldData();
+    //        m1->SelectColorArray("grad_gl_mag");
+    //        m1->ScalarVisibilityOn();
 
-            vtkNew<vtkActor> a1;
-            a1->SetMapper(m1);
-            vtkNew<vtkActor> a2;
-            a2->SetMapper(m2);
+    //        vtkNew<vtkDataSetMapper> m2;
+    //        m2->SetInputData(showDs);
+    //        m2->SetScalarModeToUsePointFieldData();
+    //        m2->SelectColorArray("grad_vtk_mag");
+    //        m2->ScalarVisibilityOn();
 
-            vtkNew<vtkRenderer> r1;
-            vtkNew<vtkRenderer> r2;
-            r1->SetViewport(0.0, 0.0, 0.5, 1.0);
-            r2->SetViewport(0.5, 0.0, 1.0, 1.0);
-            r1->AddActor(a1);
-            r2->AddActor(a2);
-            r1->SetBackground(0.1, 0.1, 0.15);
-            r2->SetBackground(0.1, 0.1, 0.15);
+    //        vtkNew<vtkActor> a1;
+    //        a1->SetMapper(m1);
+    //        vtkNew<vtkActor> a2;
+    //        a2->SetMapper(m2);
 
-            vtkNew<vtkRenderWindow> win;
-            win->SetSize(1200, 600);
-            win->AddRenderer(r1);
-            win->AddRenderer(r2);
+    //        vtkNew<vtkRenderer> r1;
+    //        vtkNew<vtkRenderer> r2;
+    //        r1->SetViewport(0.0, 0.0, 0.5, 1.0);
+    //        r2->SetViewport(0.5, 0.0, 1.0, 1.0);
+    //        r1->AddActor(a1);
+    //        r2->AddActor(a2);
+    //        r1->SetBackground(0.1, 0.1, 0.15);
+    //        r2->SetBackground(0.1, 0.1, 0.15);
 
-            vtkNew<vtkRenderWindowInteractor> iren;
-            iren->SetRenderWindow(win);
-            win->Render();
-            iren->Start();
-        }
+    //        vtkNew<vtkRenderWindow> win;
+    //        win->SetSize(1200, 600);
+    //        win->AddRenderer(r1);
+    //        win->AddRenderer(r2);
 
-        return 0;
+    //        vtkNew<vtkRenderWindowInteractor> iren;
+    //        iren->SetRenderWindow(win);
+    //        win->Render();
+    //        iren->Start();
+    //    }
+
+       return 0;
     }
 
 #if 0

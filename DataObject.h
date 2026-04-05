@@ -64,10 +64,34 @@ public:
 	std::vector<int> cellNeighborsOffsets;//单元邻域偏移信息[0,3...]索引与单元中心坐标对应
 	int dimensions[3]; // 规则网格的维度信息(仅规则网格设置)
 	
+
+	/*
+	* @brief查找数据数组
+	* @param name 数据数组名称
+	* @param type 数据数组类型（点数据或单元数据）
+	*/
 	DataArray* findDataArray(const std::string& name, DataArrayType type);
+
+	/*
+	* @brief 查找数据数组（返回的数据不能修改）
+	*/
 	const DataArray* findDataArray(const std::string& name, DataArrayType type) const;
+
+	/*
+	* @brief 更新或插入数据数组
+	* @param name 数据数组名称
+	* @param data 数据数组内容
+	* @param numComponents 数据数组组件数
+	* @param type 数据数组类型（点数据或单元数据）
+	*/
 	bool upsertDataArray(const std::string& name, const std::vector<float>& data, int numComponents, DataArrayType type);
+	/*
+	* @brief 获取点数量
+	*/
 	size_t pointCount() const;
+	/*
+	* @brief 获取单元数量
+	*/
 	size_t cellCount() const;
     //bool hasGhostData;
     //std::vector<unsigned char> ghostValues;
