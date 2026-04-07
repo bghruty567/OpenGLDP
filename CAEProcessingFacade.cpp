@@ -8,6 +8,7 @@ CAEProcessingFacade::~CAEProcessingFacade() {}
 
 bool CAEProcessingFacade::initialize(const std::string& shaderDir)
 {
+    //初始化计算引擎和OpenGL上下文
     if (!m_gl.initialize(false)) return false;
     m_engine.setShaderDir(shaderDir);
     m_initialized = m_engine.init();
@@ -41,6 +42,7 @@ std::string CAEProcessingFacade::loadDatasetFromVTKFile(const std::string& fileP
 
 std::vector<CAEDatasetSummary> CAEProcessingFacade::listDatasets() const
 {
+    //
     std::vector<CAEDatasetSummary> out;
     out.reserve(m_records.size());
     for (const auto& kv : m_records) {

@@ -36,7 +36,7 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 
 int main(int argc, char** argv)
 {
-    std::string path = "Data\\ShipHull_0.vtk";
+    std::string path = "Data\\uGridEx.vtk";
     if (argc >= 2) path = argv[1];
 
     {
@@ -50,6 +50,7 @@ int main(int argc, char** argv)
         CAEFieldAssociation assoc = (assocArg == "cell" || assocArg == "CELL")
             ? CAEFieldAssociation::Cell
             : CAEFieldAssociation::Point;
+        //assoc = CAEFieldAssociation::Cell;
 
         CAEProcessingFacade facade;
         if (!facade.initialize("Shaders")) {
@@ -169,7 +170,7 @@ int main(int argc, char** argv)
             for (int c = 0; c < nComp; ++c) {
                 double d = static_cast<double>(grad_gl[i * static_cast<size_t>(glComps) + c])
                     - static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]);
-                double a = std::abs(d);
+                double a = std::abs(d)/(std::abs(static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]))+1e-6f);
                 mae += a;
                 rmse += d * d;
                 if (a > maxe) maxe = a;
@@ -185,7 +186,7 @@ int main(int argc, char** argv)
         std::cout << "GL_gpu_ms_avg=" << (glGpuSum / reps) << " GL_gpu_ms_min=" << glGpuMin << "\n";
         std::cout << "Compare tuples=" << nTuple << " comps=" << nComp << " MAE=" << mae << " RMSE=" << rmse << " MAXE=" << maxe << "\n";
 
-        size_t show = std::min<size_t>(nTuple, 10);
+        size_t show = std::min<size_t>(nTuple, 1000);
         for (size_t i = 0; i < show; ++i) {
             std::cout << "i=" << i << " GL=[";
             for (int c = 0; c < nComp; ++c) {

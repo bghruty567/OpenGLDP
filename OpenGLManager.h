@@ -1,8 +1,9 @@
 #pragma once
 #include <string>
-#include <vtkSmartPointer.h>
-#include <vtkOpenGLRenderWindow.h>
-#include "gl_context_utils.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <glad/glad.h>
 
 
 struct OpenGLRuntimeInfo
@@ -22,28 +23,28 @@ class OpenGLManager
 {
 public:
     OpenGLManager() = default;
-    ~OpenGLManager() = default;
 
-    /*
-	* @brief 初始化OpenGL上下文，获取运行时信息
-    * @param offscreen 是否使用离屏渲染
-     * @return 初始化是否成功
-    */
+    ~OpenGLManager()
+    {
+#ifdef _WIN32
+        destroyContext();
+#endif
+    }
+
+    // offscreen 参数先保留，将来你可以根据需要控制窗口是否可见
     bool initialize(bool offscreen = false)
-    {   
-		//创建持久化的OpenGL上下文，offscreen参数决定是否使用离屏渲染
-        m_window = createPersistentGLContext(offscreen);
-        if (!m_window) {
+    {
+#ifdef _WIN32
+        if (m_ready) return true;
+        if (!createContext(offscreen)) {
             m_ready = false;
             return false;
         }
-		//确保当前线程有一个有效的OpenGL上下文，以便后续的OpenGL调用能够正确执行
-        m_window->MakeCurrent();
-        
-		const char* ven = reinterpret_cast<const char*>(glGetString(GL_VENDOR));//获取GPU供应商信息
-		const char* ren = reinterpret_cast<const char*>(glGetString(GL_RENDERER));//获取GPU渲染器信息
-		const char* ver = reinterpret_cast<const char*>(glGetString(GL_VERSION));//获取OpenGL版本信息
-		const char* glsl = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));//获取GLSL版本信息
+
+        const char* ven = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+        const char* ren = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+        const char* ver = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        const char* glsl = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
 
         glGetIntegerv(GL_MAJOR_VERSION, &m_info.major);
         glGetIntegerv(GL_MINOR_VERSION, &m_info.minor);
@@ -55,16 +56,28 @@ public:
 
         m_ready = true;
         return true;
+#else
+        m_ready = false;
+        return false;
+#endif
     }
 
     bool isReady() const
     {
-        return m_ready && m_window != nullptr;
+#ifdef _WIN32
+        return m_ready && m_hglrc != nullptr;
+#else
+        return false;
+#endif
     }
 
     void makeCurrent()
     {
-        if (m_window) m_window->MakeCurrent();
+#ifdef _WIN32
+        if (m_hdc && m_hglrc) {
+            wglMakeCurrent(m_hdc, m_hglrc);
+        }
+#endif
     }
 
     const OpenGLRuntimeInfo& info() const
@@ -72,13 +85,109 @@ public:
         return m_info;
     }
 
-    vtkSmartPointer<vtkOpenGLRenderWindow> window() const
+private:
+#ifdef _WIN32
+    static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
-        return m_window;
+        return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 
-private:
-    vtkSmartPointer<vtkOpenGLRenderWindow> m_window;
+    bool createContext(bool offscreen)
+    {
+        HINSTANCE hInst = GetModuleHandleA(nullptr);
+
+        WNDCLASSA wc{};
+        wc.style = CS_OWNDC;
+        wc.lpfnWndProc = wndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = "OpenGLDP_DummyWindow";
+
+        if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return false;
+        }
+
+        DWORD style = offscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+
+        m_hwnd = CreateWindowExA(
+            0,
+            wc.lpszClassName,
+            wc.lpszClassName,
+            style,
+            0, 0,
+            1, 1,
+            nullptr,
+            nullptr,
+            hInst,
+            nullptr);
+        if (!m_hwnd) {
+            return false;
+        }
+
+        m_hdc = GetDC(m_hwnd);
+        if (!m_hdc) {
+            destroyContext();
+            return false;
+        }
+
+        PIXELFORMATDESCRIPTOR pfd{};
+        pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+        pfd.nVersion = 1;
+        pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+        pfd.iPixelType = PFD_TYPE_RGBA;
+        pfd.cColorBits = 24;
+        pfd.cDepthBits = 24;
+        pfd.iLayerType = PFD_MAIN_PLANE;
+
+        int pf = ChoosePixelFormat(m_hdc, &pfd);
+        if (pf == 0) {
+            destroyContext();
+            return false;
+        }
+        if (!SetPixelFormat(m_hdc, pf, &pfd)) {
+            destroyContext();
+            return false;
+        }
+
+        m_hglrc = wglCreateContext(m_hdc);
+        if (!m_hglrc) {
+            destroyContext();
+            return false;
+        }
+        if (!wglMakeCurrent(m_hdc, m_hglrc)) {
+            destroyContext();
+            return false;
+        }
+
+        if (!gladLoadGL()) {
+            destroyContext();
+            return false;
+        }
+
+        return true;
+    }
+
+    void destroyContext()
+    {
+        if (m_hglrc) {
+            wglMakeCurrent(nullptr, nullptr);
+            wglDeleteContext(m_hglrc);
+            m_hglrc = nullptr;
+        }
+        if (m_hwnd && m_hdc) {
+            ReleaseDC(m_hwnd, m_hdc);
+        }
+        m_hdc = nullptr;
+        if (m_hwnd) {
+            DestroyWindow(m_hwnd);
+            m_hwnd = nullptr;
+        }
+    }
+
+    HWND  m_hwnd = nullptr;
+    HDC   m_hdc = nullptr;
+    HGLRC m_hglrc = nullptr;
+#endif
+
     OpenGLRuntimeInfo m_info;
     bool m_ready = false;
 };

@@ -260,11 +260,12 @@ int VTKDataConverter ::convertUnstructuredGrid() {
     this->convertDataArrays();
     this->convertPointInCellNeighbors();
     //this->convertPointNeighborsByKNN(4);
-    this->convertPointNeighborsRobust(4,24);
-	//this->convertPointNeighbors();
+    //this->convertPointNeighborsRobust(4,24);
+	this->convertPointNeighbors();
     this->convertCellCenters();
     this->convertCell();
-    this->convertCellNeighborsByKNN(5);
+    //this->convertCellNeighborsByKNN(5);
+    this->convertCellNeighbors();
     return 1;
 }
 
