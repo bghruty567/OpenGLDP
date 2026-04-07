@@ -259,9 +259,12 @@ int VTKDataConverter ::convertUnstructuredGrid() {
     this->convertPoints();
     this->convertDataArrays();
     this->convertPointInCellNeighbors();
-    //this->convertPointNeighborsByKNN(4);
-    //this->convertPointNeighborsRobust(4,24);
-	this->convertPointNeighbors();
+    //this->convertPointNeighborsByKNN(20);
+    //this->convertPointNeighborsRobust(48,100);
+	//this->convertPointNeighbors();
+    if (!this->convertPointNeighborsRobust(12, 24)) {
+        this->convertPointNeighbors();
+    }
     this->convertCellCenters();
     this->convertCell();
     //this->convertCellNeighborsByKNN(5);
@@ -443,11 +446,26 @@ int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
         if ((int)nbset.size() < minK)
         {
             double qpos[3]; this->vtkData->GetPoint(ptId, qpos);
+            double topoMeanDist = 0.0;
+            int topoCount = 0;
+            for (int q : nbset)
+            {
+                double p[3]; this->vtkData->GetPoint(static_cast<vtkIdType>(q), p);
+                double dx = p[0] - qpos[0], dy = p[1] - qpos[1], dz = p[2] - qpos[2];
+                topoMeanDist += std::sqrt(dx * dx + dy * dy + dz * dz);
+                ++topoCount;
+            }
+            if (topoCount > 0) topoMeanDist /= static_cast<double>(topoCount);
+            double maxAcceptDist = topoCount > 0 ? (2.5 * topoMeanDist) : std::numeric_limits<double>::max();
             locator->FindClosestNPoints(knnK + 1, qpos, ids);
             for (vtkIdType i = 0; i < ids->GetNumberOfIds(); ++i)
             {
                 vtkIdType q = ids->GetId(i);
                 if (q == ptId) continue;
+                double p[3]; this->vtkData->GetPoint(q, p);
+                double dx = p[0] - qpos[0], dy = p[1] - qpos[1], dz = p[2] - qpos[2];
+                double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (d > maxAcceptDist) continue;
                 nbset.insert(static_cast<int>(q));
                 if ((int)nbset.size() >= minK) break;
             }

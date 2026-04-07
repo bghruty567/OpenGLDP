@@ -139,6 +139,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Data\1_0.vtk" />
+    <None Include="Data\blow.vtk" />
     <None Include="Data\hexa.vtk" />
     <None Include="Data\SampleStructGrid.vtk" />
     <None Include="doc\1.md" />
@@ -163,6 +164,12 @@
     <ClInclude Include="gl_context_utils.h" />
     <ClInclude Include="OpenGLManager.h" />
     <ClInclude Include="VTKDataConverter.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="results\1.txt" />
+    <Text Include="results\ShipHull_0.txt" />
+    <Text Include="results\ShipHull_1.txt" />
+    <Text Include="results\uGridEx.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

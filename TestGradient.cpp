@@ -165,26 +165,43 @@ int main(int argc, char** argv)
         size_t glTuples = glComps > 0 ? grad_gl.size() / static_cast<size_t>(glComps) : 0;
         size_t nTuple = std::min(glTuples, vtkTuples);
         int nComp = std::min(glComps, vtkComps);
-        double mae = 0.0, rmse = 0.0, maxe = 0.0;
+        double maeAbs = 0.0, rmse = 0.0, maxAbs = 0.0;
+        double maeRel = 0.0, maxRel = 0.0;
+        size_t relCount = 0;
         for (size_t i = 0; i < nTuple; ++i) {
             for (int c = 0; c < nComp; ++c) {
-                double d = static_cast<double>(grad_gl[i * static_cast<size_t>(glComps) + c])
-                    - static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]);
-                double a = std::abs(d)/(std::abs(static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]))+1e-6f);
-                mae += a;
+                double glv = static_cast<double>(grad_gl[i * static_cast<size_t>(glComps) + c]);
+                double vtkv = static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]);
+                double d = glv - vtkv;
+                double a = std::abs(d);
+                maeAbs += a;
                 rmse += d * d;
-                if (a > maxe) maxe = a;
+                if (a > maxAbs) maxAbs = a;
+                double ref = std::abs(vtkv);
+                if (ref > 1e-3) {
+                    double r = a / ref;
+                    maeRel += r;
+                    if (r > maxRel) maxRel = r;
+                    ++relCount;
+                }
             }
         }
         double denom = std::max<size_t>(1, nTuple * static_cast<size_t>(nComp));
-        mae /= denom;
+        maeAbs /= denom;
         rmse = std::sqrt(rmse / denom);
+        double meanRel = relCount > 0 ? (maeRel / static_cast<double>(relCount)) : 0.0;
 
         std::cout << "Array=" << arrayName << " Assoc=" << (assoc == CAEFieldAssociation::Point ? "POINT" : "CELL") << "\n";
         std::cout << "VTK_time_ms_avg=" << (vtkSum / reps) << " VTK_time_ms_min=" << vtkMin << "\n";
         std::cout << "GL_wall_ms_avg=" << (glWallSum / reps) << " GL_wall_ms_min=" << glWallMin << "\n";
         std::cout << "GL_gpu_ms_avg=" << (glGpuSum / reps) << " GL_gpu_ms_min=" << glGpuMin << "\n";
-        std::cout << "Compare tuples=" << nTuple << " comps=" << nComp << " MAE=" << mae << " RMSE=" << rmse << " MAXE=" << maxe << "\n";
+        std::cout << "Compare tuples=" << nTuple << " comps=" << nComp
+                  << " MAE_abs=" << maeAbs
+                  << " RMSE=" << rmse
+                  << " MAX_abs=" << maxAbs
+                  << " RelMAE(|VTK|>1e-3)=" << meanRel
+                  << " RelMAX(|VTK|>1e-3)=" << maxRel
+                  << " RelCount=" << relCount << "\n";
 
         size_t show = std::min<size_t>(nTuple, 1000);
         for (size_t i = 0; i < show; ++i) {
