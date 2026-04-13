@@ -5,8 +5,8 @@
 #include <sstream>
 
 /*
-* @brief ´ÓÎÄ¼şÖĞ¶ÁÈ¡ÎÄ±¾ÄÚÈİ
-* @param p ÎÄ¼şÂ·¾¶
+* @brief ä»æ–‡ä»¶ä¸­è¯»å–æ–‡æœ¬å†…å®¹
+* @param p æ–‡ä»¶è·¯å¾„
 */
 static std::string readFileText(const std::string& p)
 {
@@ -29,21 +29,21 @@ void GLGradientEngine::ensureBuffer(GLuint& id, size_t bytes, GLenum usage)
 {
     if (id == 0)
     {
-		glGenBuffers(1, &id);//´´½¨ĞÂ»º³åÇø
+		glGenBuffers(1, &id);//åˆ›å»ºæ–°ç¼“å†²åŒº
     }
 
-	glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);//°ó¶¨»º³åÇø¶ÔÏóµ½GL_SHADER_STORAGE_BUFFERÄ¿±ê
-	glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, nullptr, usage);//·ÖÅä»òÖØĞÂ·ÖÅä»º³åÇøÊı¾İ´æ´¢£¬bytesÎªËùĞè´óĞ¡£¬usageÎªÊ¹ÓÃÄ£Ê½
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);//ç»‘å®šç¼“å†²åŒºå¯¹è±¡åˆ°GL_SHADER_STORAGE_BUFFERç›®æ ‡
+	glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, nullptr, usage);//åˆ†é…æˆ–é‡æ–°åˆ†é…ç¼“å†²åŒºæ•°æ®å­˜å‚¨ï¼Œbytesä¸ºæ‰€éœ€å¤§å°ï¼Œusageä¸ºä½¿ç”¨æ¨¡å¼
 }
 
 GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
 {
-	//¼ì²éOpenGLÉÏÏÂÎÄ°æ±¾£¬È·±£Ö§³Ö¼ÆËã×ÅÉ«Æ÷
+	//æ£€æŸ¥OpenGLä¸Šä¸‹æ–‡ç‰ˆæœ¬ï¼Œç¡®ä¿æ”¯æŒè®¡ç®—ç€è‰²å™¨
     GLint major = 0;
     GLint minor = 0;
 
-	glGetIntegerv(GL_MAJOR_VERSION, &major);//»ñÈ¡OpenGLÖ÷°æ±¾ºÅ
-	glGetIntegerv(GL_MINOR_VERSION, &minor);//»ñÈ¡OpenGL´Î°æ±¾ºÅ
+	glGetIntegerv(GL_MAJOR_VERSION, &major);//è·å–OpenGLä¸»ç‰ˆæœ¬å·
+	glGetIntegerv(GL_MINOR_VERSION, &minor);//è·å–OpenGLæ¬¡ç‰ˆæœ¬å·
 
     if (major < 4 || (major == 4 && minor < 3))
     {
@@ -53,40 +53,40 @@ GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
         return 0;
     }
 
-	GLuint sh = glCreateShader(GL_COMPUTE_SHADER);///´´½¨¼ÆËã×ÅÉ«Æ÷¶ÔÏó£¬·µ»Ø¶ÔÏóID
+	GLuint sh = glCreateShader(GL_COMPUTE_SHADER);///åˆ›å»ºè®¡ç®—ç€è‰²å™¨å¯¹è±¡ï¼Œè¿”å›å¯¹è±¡ID
     GLenum err = glGetError();
 
-	if (sh == 0 || err != GL_NO_ERROR)//¼ì²é×ÅÉ«Æ÷¶ÔÏó´´½¨ÊÇ·ñ³É¹¦£¬glGetError¼ì²éÊÇ·ñÓĞ´íÎó·¢Éú
+	if (sh == 0 || err != GL_NO_ERROR)//æ£€æŸ¥ç€è‰²å™¨å¯¹è±¡åˆ›å»ºæ˜¯å¦æˆåŠŸï¼ŒglGetErroræ£€æŸ¥æ˜¯å¦æœ‰é”™è¯¯å‘ç”Ÿ
     {
         std::cerr << "[GL] glCreateShader(COMPUTE) failed. sh="
             << sh << " glError=0x" << std::hex << err << std::dec << "\n";
         return 0;
     }
 
-	std::string src = readFileText(path);//´ÓÖ¸¶¨Â·¾¶¶ÁÈ¡×ÅÉ«Æ÷Ô´´úÂëÎÄ±¾
+	std::string src = readFileText(path);//ä»æŒ‡å®šè·¯å¾„è¯»å–ç€è‰²å™¨æºä»£ç æ–‡æœ¬
     if (src.empty())
         return 0;
 
     const char* c = src.c_str();
 
-	glShaderSource(sh, 1, &c, nullptr);//ÉèÖÃ×ÅÉ«Æ÷Ô´´úÂë
-	glCompileShader(sh);//±àÒë×ÅÉ«Æ÷
+	glShaderSource(sh, 1, &c, nullptr);//è®¾ç½®ç€è‰²å™¨æºä»£ç 
+	glCompileShader(sh);//ç¼–è¯‘ç€è‰²å™¨
 
     GLint ok = 0;
-	glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);//¼ì²é×ÅÉ«Æ÷±àÒëÊÇ·ñ³É¹¦
+	glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);//æ£€æŸ¥ç€è‰²å™¨ç¼–è¯‘æ˜¯å¦æˆåŠŸ
     if (!ok)
     {
         glDeleteShader(sh);
         return 0;
     }
 
-	GLuint pr = glCreateProgram();//´´½¨×ÅÉ«Æ÷³ÌĞò¶ÔÏó£¬·µ»Ø¶ÔÏóID
+	GLuint pr = glCreateProgram();//åˆ›å»ºç€è‰²å™¨ç¨‹åºå¯¹è±¡ï¼Œè¿”å›å¯¹è±¡ID
 
-	glAttachShader(pr, sh);//½«±àÒëºÃµÄ×ÅÉ«Æ÷¶ÔÏó¸½¼Óµ½³ÌĞò¶ÔÏóÉÏ
-	glLinkProgram(pr);//Á´½Ó³ÌĞò¶ÔÏó£¬×¼±¸Ö´ĞĞ
-	glDeleteShader(sh);//Á´½ÓÍê³Éºó¿ÉÒÔÉ¾³ı×ÅÉ«Æ÷¶ÔÏó
+	glAttachShader(pr, sh);//å°†ç¼–è¯‘å¥½çš„ç€è‰²å™¨å¯¹è±¡é™„åŠ åˆ°ç¨‹åºå¯¹è±¡ä¸Š
+	glLinkProgram(pr);//é“¾æ¥ç¨‹åºå¯¹è±¡ï¼Œå‡†å¤‡æ‰§è¡Œ
+	glDeleteShader(sh);//é“¾æ¥å®Œæˆåå¯ä»¥åˆ é™¤ç€è‰²å™¨å¯¹è±¡
 
-	glGetProgramiv(pr, GL_LINK_STATUS, &ok);//¼ì²é³ÌĞòÁ´½ÓÊÇ·ñ³É¹¦
+	glGetProgramiv(pr, GL_LINK_STATUS, &ok);//æ£€æŸ¥ç¨‹åºé“¾æ¥æ˜¯å¦æˆåŠŸ
     if (!ok)
     {
         glDeleteProgram(pr);
@@ -140,14 +140,14 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     std::vector<float>& outGrad)
 {
     if (progRegular == 0) return false;
-	int64_t n = int64_t(p.dims[0]) * p.dims[1] * p.dims[2];//¼ÆËãÍø¸ñµã×ÜÊı
-	//¼ì²éÊäÈëÊı¾İµÄÓĞĞ§ĞÔ£¬È·±£µãÊı´óÓÚ0£¬Î»ÖÃÊı×é´óĞ¡ÓëµãÊıÆ¥Åä£¬ÖµÊı×é´óĞ¡ÓëµãÊıµÄÕûÊı±¶Æ¥Åä
+	int64_t n = int64_t(p.dims[0]) * p.dims[1] * p.dims[2];//è®¡ç®—ç½‘æ ¼ç‚¹æ€»æ•°
+	//æ£€æŸ¥è¾“å…¥æ•°æ®çš„æœ‰æ•ˆæ€§ï¼Œç¡®ä¿ç‚¹æ•°å¤§äº0ï¼Œä½ç½®æ•°ç»„å¤§å°ä¸ç‚¹æ•°åŒ¹é…ï¼Œå€¼æ•°ç»„å¤§å°ä¸ç‚¹æ•°çš„æ•´æ•°å€åŒ¹é…
     if (n <= 0) return false;
     if (positions.size() != size_t(n) * 3) return false;
     if (values.empty() || (int64_t)(values.size() % n) != 0) return false;
     
-    int comps = int((int64_t)values.size() / n);//È·¶¨Êı¾İ·ÖÁ¿Êı
-	outGrad.resize(size_t(n) * size_t(3 * comps));//µ÷ÕûÊä³öÌİ¶ÈÊı×é´óĞ¡
+    int comps = int((int64_t)values.size() / n);//ç¡®å®šæ•°æ®åˆ†é‡æ•°
+	outGrad.resize(size_t(n) * size_t(3 * comps));//è°ƒæ•´è¾“å‡ºæ¢¯åº¦æ•°ç»„å¤§å°
 
     ensureBuffer(ssbo0, positions.size() * sizeof(float), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
@@ -164,24 +164,24 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo2);
 
     glUseProgram(progRegular);
-	GLint ld = glGetUniformLocation(progRegular, "uDims");//»ñÈ¡×ÅÉ«Æ÷ÖĞuDims±äÁ¿µÄÎ»ÖÃ
-	GLint lc = glGetUniformLocation(progRegular, "uNumComponents");//»ñÈ¡×ÅÉ«Æ÷ÖĞuNumComponents±äÁ¿µÄÎ»ÖÃ
-	glUniform3ui(ld, (GLuint)p.dims[0], (GLuint)p.dims[1], (GLuint)p.dims[2]);//½«Íø¸ñÎ¬¶ÈĞÅÏ¢´«µİ¸ø×ÅÉ«Æ÷
-	glUniform1i(lc, comps);//½«Êı¾İ·ÖÁ¿Êı´«µİ¸ø×ÅÉ«Æ÷
+	GLint ld = glGetUniformLocation(progRegular, "uDims");//è·å–ç€è‰²å™¨ä¸­uDimså˜é‡çš„ä½ç½®
+	GLint lc = glGetUniformLocation(progRegular, "uNumComponents");//è·å–ç€è‰²å™¨ä¸­uNumComponentså˜é‡çš„ä½ç½®
+	glUniform3ui(ld, (GLuint)p.dims[0], (GLuint)p.dims[1], (GLuint)p.dims[2]);//å°†ç½‘æ ¼ç»´åº¦ä¿¡æ¯ä¼ é€’ç»™ç€è‰²å™¨
+	glUniform1i(lc, comps);//å°†æ•°æ®åˆ†é‡æ•°ä¼ é€’ç»™ç€è‰²å™¨
 
-	//¼ÆËã¹¤×÷×éÊıÁ¿£¬¼ÙÉèÃ¿¸ö¹¤×÷×é´¦Àí8x8x8µÄÍø¸ñµã£¬¸ù¾İÍø¸ñÎ¬¶È¼ÆËãĞèÒª¶àÉÙ¸ö¹¤×÷×é
+	//è®¡ç®—å·¥ä½œç»„æ•°é‡ï¼Œå‡è®¾æ¯ä¸ªå·¥ä½œç»„å¤„ç†8x8x8çš„ç½‘æ ¼ç‚¹ï¼Œæ ¹æ®ç½‘æ ¼ç»´åº¦è®¡ç®—éœ€è¦å¤šå°‘ä¸ªå·¥ä½œç»„
     GLuint gx = (p.dims[0] + 7) / 8;
     GLuint gy = (p.dims[1] + 7) / 8;
     GLuint gz = (p.dims[2] + 7) / 8;
-	if (enableGpuTiming) {//Èç¹ûÆôÓÃGPU¼ÆÊ±£¬¿ªÊ¼¼ÆÊ±
-		if (timeQuery == 0) glGenQueries(1, &timeQuery);//Èç¹û¼ÆÊ±²éÑ¯¶ÔÏó²»´æÔÚÔò´´½¨
-		glBeginQuery(GL_TIME_ELAPSED, timeQuery);//¿ªÊ¼GPUÊ±¼ä²éÑ¯
+	if (enableGpuTiming) {//å¦‚æœå¯ç”¨GPUè®¡æ—¶ï¼Œå¼€å§‹è®¡æ—¶
+		if (timeQuery == 0) glGenQueries(1, &timeQuery);//å¦‚æœè®¡æ—¶æŸ¥è¯¢å¯¹è±¡ä¸å­˜åœ¨åˆ™åˆ›å»º
+		glBeginQuery(GL_TIME_ELAPSED, timeQuery);//å¼€å§‹GPUæ—¶é—´æŸ¥è¯¢
     }
 
-	glDispatchCompute(gx, gy, gz);//Æô¶¯¼ÆËã×ÅÉ«Æ÷£¬Ö¸¶¨¹¤×÷×éÊıÁ¿
-	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); //È·±£¼ÆËã×ÅÉ«Æ÷Ğ´ÈëµÄ½á¹û¶ÔºóĞø²Ù×÷¿É¼û
+	glDispatchCompute(gx, gy, gz);//å¯åŠ¨è®¡ç®—ç€è‰²å™¨ï¼ŒæŒ‡å®šå·¥ä½œç»„æ•°é‡
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); //ç¡®ä¿è®¡ç®—ç€è‰²å™¨å†™å…¥çš„ç»“æœå¯¹åç»­æ“ä½œå¯è§
 
-	if (enableGpuTiming) {//Èç¹ûÆôÓÃGPU¼ÆÊ±£¬½áÊø¼ÆÊ±²¢»ñÈ¡½á¹û
+	if (enableGpuTiming) {//å¦‚æœå¯ç”¨GPUè®¡æ—¶ï¼Œç»“æŸè®¡æ—¶å¹¶è·å–ç»“æœ
         glEndQuery(GL_TIME_ELAPSED);
         GLuint64 ns = 0;
         glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
@@ -189,7 +189,7 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
-	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());//´ÓGPU»º³åÇø¶ÁÈ¡¼ÆËã½á¹ûµ½outGradÊı×é
+	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());//ä»GPUç¼“å†²åŒºè¯»å–è®¡ç®—ç»“æœåˆ°outGradæ•°ç»„
     return true;
 }
 
@@ -217,7 +217,7 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
 
     outGrad.resize(np * size_t(3 * comps));
 
-	// WLS¼ÆËã×ÅÉ«Æ÷ÖĞÃ¿¸öµãµÄÎ»ÖÃÊ¹ÓÃvec4¸ñÊ½´æ´¢£¬µÚËÄ·ÖÁ¿Ìî³äÎª0£¬ÒÔÂú×ãstd140²¼¾ÖÒªÇó
+	// WLSè®¡ç®—ç€è‰²å™¨ä¸­æ¯ä¸ªç‚¹çš„ä½ç½®ä½¿ç”¨vec4æ ¼å¼å­˜å‚¨ï¼Œç¬¬å››åˆ†é‡å¡«å……ä¸º0ï¼Œä»¥æ»¡è¶³std140å¸ƒå±€è¦æ±‚
     std::vector<float> pos4(np * 4);
     for (size_t i = 0; i < np; ++i)
     {
@@ -227,22 +227,22 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
         pos4[i * 4 + 3] = 0.0f;
     }
 
-    ensureBuffer(ssbo0, pos4.size() * sizeof(float), GL_DYNAMIC_DRAW);//µã
+    ensureBuffer(ssbo0, pos4.size() * sizeof(float), GL_DYNAMIC_DRAW);//ç‚¹
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         pos4.size() * sizeof(float), pos4.data());
 
-	ensureBuffer(ssbo1, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);//ÁÚÓòÆ«ÒÆ
+	ensureBuffer(ssbo1, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);//é‚»åŸŸåç§»
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo1);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         offsets.size() * sizeof(int), offsets.data());
 
-	ensureBuffer(ssbo2, neighbors.size() * sizeof(int), GL_DYNAMIC_DRAW);//ÁÚÓòµãË÷Òı
+	ensureBuffer(ssbo2, neighbors.size() * sizeof(int), GL_DYNAMIC_DRAW);//é‚»åŸŸç‚¹ç´¢å¼•
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         neighbors.size() * sizeof(int), neighbors.data());
 
-	ensureBuffer(ssbo3, phi.size() * sizeof(float), GL_DYNAMIC_DRAW);//ÊäÈëÊı¾İ
+	ensureBuffer(ssbo3, phi.size() * sizeof(float), GL_DYNAMIC_DRAW);//è¾“å…¥æ•°æ®
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         phi.size() * sizeof(float), phi.data());
@@ -262,14 +262,14 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
     GLint luL = glGetUniformLocation(progWLS, "uLambda");
     GLint luC = glGetUniformLocation(progWLS, "uNumComponents");
 
-	glUniform1i(luN, (int)np);//½«µãÊı´«µİ¸ø×ÅÉ«Æ÷
-	glUniform1f(luE, p.wExponent);//½«È¨ÖØÖ¸Êı´«µİ¸ø×ÅÉ«Æ÷
-	glUniform1f(luL, p.lambda);//½«ÕıÔò»¯²ÎÊı´«µİ¸ø×ÅÉ«Æ÷
-	glUniform1i(luC, comps);//½«Êı¾İ·ÖÁ¿Êı´«µİ¸ø×ÅÉ«Æ÷
+	glUniform1i(luN, (int)np);//å°†ç‚¹æ•°ä¼ é€’ç»™ç€è‰²å™¨
+	glUniform1f(luE, p.wExponent);//å°†æƒé‡æŒ‡æ•°ä¼ é€’ç»™ç€è‰²å™¨
+	glUniform1f(luL, p.lambda);//å°†æ­£åˆ™åŒ–å‚æ•°ä¼ é€’ç»™ç€è‰²å™¨
+	glUniform1i(luC, comps);//å°†æ•°æ®åˆ†é‡æ•°ä¼ é€’ç»™ç€è‰²å™¨
 
     GLuint gx = (GLuint)((np + 255) / 256);
 
-	if (enableGpuTiming) {//Èç¹ûÆôÓÃGPU¼ÆÊ±£¬¿ªÊ¼¼ÆÊ±
+	if (enableGpuTiming) {//å¦‚æœå¯ç”¨GPUè®¡æ—¶ï¼Œå¼€å§‹è®¡æ—¶
         if (timeQuery == 0) glGenQueries(1, &timeQuery);
         glBeginQuery(GL_TIME_ELAPSED, timeQuery);
     }
@@ -277,14 +277,14 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
     glDispatchCompute(gx, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-	if (enableGpuTiming) {//Èç¹ûÆôÓÃGPU¼ÆÊ±£¬½áÊø¼ÆÊ±²¢»ñÈ¡½á¹û
+	if (enableGpuTiming) {//å¦‚æœå¯ç”¨GPUè®¡æ—¶ï¼Œç»“æŸè®¡æ—¶å¹¶è·å–ç»“æœ
         glEndQuery(GL_TIME_ELAPSED);
         GLuint64 ns = 0;
         glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
         lastGpuTimeMs = static_cast<double>(ns) / 1e6; // ns -> ms
     }
 
-	//´ÓGPU»º³åÇø¶ÁÈ¡¼ÆËã½á¹ûµ½outGradÊı×é
+	//ä»GPUç¼“å†²åŒºè¯»å–è®¡ç®—ç»“æœåˆ°outGradæ•°ç»„
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo4);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
         outGrad.size() * sizeof(float), outGrad.data());
@@ -295,7 +295,7 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
 void GLGradientEngine::setEnableGpuTiming(bool on)
 {
     enableGpuTiming = on;
-	//Èç¹ûÆôÓÃGPU¼ÆÊ±µ«²éÑ¯¶ÔÏóÉĞÎ´´´½¨£¬Ôò´´½¨Ò»¸öĞÂµÄ²éÑ¯¶ÔÏó
+	//å¦‚æœå¯ç”¨GPUè®¡æ—¶ä½†æŸ¥è¯¢å¯¹è±¡å°šæœªåˆ›å»ºï¼Œåˆ™åˆ›å»ºä¸€ä¸ªæ–°çš„æŸ¥è¯¢å¯¹è±¡
     if (enableGpuTiming && timeQuery == 0) {
         glGenQueries(1, &timeQuery);
     }

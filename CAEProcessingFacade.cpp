@@ -8,7 +8,7 @@ CAEProcessingFacade::~CAEProcessingFacade() {}
 
 bool CAEProcessingFacade::initialize(const std::string& shaderDir)
 {
-    //³õÊ¼»¯¼ÆËãÒıÇæºÍOpenGLÉÏÏÂÎÄ
+    //åˆå§‹åŒ–è®¡ç®—å¼•æ“å’ŒOpenGLä¸Šä¸‹æ–‡
     if (!m_gl.initialize(false)) return false;
     m_engine.setShaderDir(shaderDir);
     m_initialized = m_engine.init();

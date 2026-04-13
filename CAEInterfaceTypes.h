@@ -29,8 +29,8 @@ struct CAEFieldInfo {
 };
 
 struct CAEGradientRequest {
-	std::string datasetId;///数据集ID
-	std::string inputArrayName;//输入数组名称
+	std::string datasetId;///鏁版嵁闆咺D
+	std::string inputArrayName;//杈撳叆鏁扮粍鍚嶇О
     CAEFieldAssociation association = CAEFieldAssociation::Point;
     CAEGradientMethod method = CAEGradientMethod::Auto;
     float wlsExponent = 1.0f;

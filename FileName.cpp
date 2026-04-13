@@ -16,9 +16,9 @@
 //#include "VTKDataConverter.h"
 //
 //#include "vtkAutoInit.h"
-//VTK_MODULE_INIT(vtkRenderingOpenGL2);  // ºËĞÄäÖÈ¾Ä£¿é
-//VTK_MODULE_INIT(vtkInteractionStyle);   // ½»»¥¿ØÖÆÄ£¿é
-//VTK_MODULE_INIT(vtkRenderingFreeType);  // ÎÄ±¾äÖÈ¾£¨ÈçĞèÏÔÊ¾ÎÄ×Ö£©
+//VTK_MODULE_INIT(vtkRenderingOpenGL2);  // æ ¸å¿ƒæ¸²æŸ“æ¨¡å—
+//VTK_MODULE_INIT(vtkInteractionStyle);   // äº¤äº’æ§åˆ¶æ¨¡å—
+//VTK_MODULE_INIT(vtkRenderingFreeType);  // æ–‡æœ¬æ¸²æŸ“ï¼ˆå¦‚éœ€æ˜¾ç¤ºæ–‡å­—ï¼‰
 //
 //// Note that:
 //// vtkExtractEdges moved from vtkFiltersExtraction to vtkFiltersCore in
