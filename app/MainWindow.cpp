@@ -1,7 +1,11 @@
 #include "MainWindow.h"
 
+#include <algorithm>
+
 #include <QCoreApplication>
+#include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -11,11 +15,9 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QVBoxLayout>
-#include <QComboBox>
-#include <QDoubleSpinBox>
-#include <QSpinBox>
 #include <QWidget>
 
 #include <QVTKOpenGLNativeWidget.h>
@@ -23,14 +25,15 @@
 #include <vtkDataSet.h>
 #include <vtkDataSetMapper.h>
 #include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkNew.h>
 #include <vtkRenderer.h>
 
 namespace
 {
-    std::string toStdString(const QString& s)
-    {
-        return s.toLocal8Bit().toStdString();
-    }
+std::string toStdString(const QString& s)
+{
+    return s.toLocal8Bit().toStdString();
+}
 }
 
 MainWindow::MainWindow(QWidget* parent)
@@ -45,14 +48,18 @@ MainWindow::MainWindow(QWidget* parent)
     bindSignals();
 
     if (!m_initialized) {
-        appendLog("OpenGL/Shader 初始化失败，请先确认 Shaders 目录已复制到构建输出目录。");
-        QMessageBox::critical(this, "初始化失败",
-            "CAEProcessingFacade 初始化失败。\n请检查 OpenGL 环境和 Shaders 目录。");
+        appendLog("Failed to initialize OpenGL or shaders.");
+        QMessageBox::critical(
+            this,
+            "Initialization Failed",
+            "CAEProcessingFacade initialization failed.\nCheck OpenGL and the Shaders folder.");
     }
 }
 
 void MainWindow::buildUi()
 {
+    setWindowTitle("OpenGLDP");
+
     auto* central = new QWidget(this);
     auto* rootLayout = new QHBoxLayout(central);
 
@@ -63,14 +70,14 @@ void MainWindow::buildUi()
     auto* leftPanel = new QWidget(this);
     auto* leftLayout = new QVBoxLayout(leftPanel);
 
-    m_openBtn = new QPushButton("打开 VTK", this);
-    m_exportBtn = new QPushButton("导出当前数据集", this);
+    m_openBtn = new QPushButton("Open VTK", this);
+    m_exportBtn = new QPushButton("Export Current Dataset", this);
     m_datasetList = new QListWidget(this);
-    m_summaryLabel = new QLabel("未加载数据集", this);
+    m_summaryLabel = new QLabel("No dataset loaded", this);
 
     leftLayout->addWidget(m_openBtn);
     leftLayout->addWidget(m_exportBtn);
-    leftLayout->addWidget(new QLabel("数据集列表", this));
+    leftLayout->addWidget(new QLabel("Datasets", this));
     leftLayout->addWidget(m_datasetList);
     leftLayout->addWidget(m_summaryLabel);
 
@@ -101,14 +108,14 @@ void MainWindow::buildUi()
     m_componentSpin = new QSpinBox(this);
     m_componentSpin->setRange(0, 0);
 
-    m_computeBtn = new QPushButton("计算梯度", this);
+    m_computeBtn = new QPushButton("Compute Gradient", this);
 
-    form->addRow("关联类型", m_assocBox);
-    form->addRow("数组", m_arrayBox);
-    form->addRow("方法", m_methodBox);
-    form->addRow("WLS 指数", m_wExpSpin);
-    form->addRow("WLS 正则", m_lambdaSpin);
-    form->addRow("显示分量", m_componentSpin);
+    form->addRow("Association", m_assocBox);
+    form->addRow("Array", m_arrayBox);
+    form->addRow("Method", m_methodBox);
+    form->addRow("WLS Exponent", m_wExpSpin);
+    form->addRow("WLS Lambda", m_lambdaSpin);
+    form->addRow("Visible Component", m_componentSpin);
     form->addRow("", m_computeBtn);
 
     auto* rightPanel = new QWidget(this);
@@ -140,9 +147,9 @@ void MainWindow::bindSignals()
     connect(m_computeBtn, &QPushButton::clicked, this, &MainWindow::computeGradient);
 
     connect(m_datasetList, &QListWidget::currentRowChanged, this, &MainWindow::handleDatasetChanged);
-    connect(m_assocBox, &QComboBox::currentIndexChanged, this, &MainWindow::handleAssociationChanged);
-    connect(m_arrayBox, &QComboBox::currentIndexChanged, this, &MainWindow::handleArrayChanged);
-    connect(m_componentSpin, &QSpinBox::valueChanged, this, [this]() { renderSelectedArray(); });
+    connect(m_assocBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::handleAssociationChanged);
+    connect(m_arrayBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::handleArrayChanged);
+    connect(m_componentSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { renderSelectedArray(); });
 }
 
 void MainWindow::appendLog(const QString& text)
@@ -153,7 +160,9 @@ void MainWindow::appendLog(const QString& text)
 QString MainWindow::selectedDatasetId() const
 {
     auto* item = m_datasetList->currentItem();
-    if (!item) return {};
+    if (!item) {
+        return {};
+    }
     return item->data(Qt::UserRole).toString();
 }
 
@@ -167,24 +176,31 @@ CAEFieldAssociation MainWindow::currentAssociation() const
 CAEGradientMethod MainWindow::currentMethod() const
 {
     switch (m_methodBox->currentIndex()) {
-    case 1: return CAEGradientMethod::FiniteDifference;
-    case 2: return CAEGradientMethod::WeightedLeastSquares;
-    default: return CAEGradientMethod::Auto;
+    case 1:
+        return CAEGradientMethod::FiniteDifference;
+    case 2:
+        return CAEGradientMethod::WeightedLeastSquares;
+    default:
+        return CAEGradientMethod::Auto;
     }
 }
 
 void MainWindow::openFile()
 {
-    if (!m_initialized) return;
+    if (!m_initialized) {
+        return;
+    }
 
     const QString filePath = QFileDialog::getOpenFileName(
-        this, "打开 VTK 文件", QString(), "VTK legacy (*.vtk)");
+        this, "Open VTK File", QString(), "VTK legacy (*.vtk)");
 
-    if (filePath.isEmpty()) return;
+    if (filePath.isEmpty()) {
+        return;
+    }
 
     const std::string dsId = m_facade.loadDatasetFromVTKFile(toStdString(filePath));
     if (dsId.empty()) {
-        QMessageBox::warning(this, "加载失败", "VTK 文件加载失败。");
+        QMessageBox::warning(this, "Load Failed", "Failed to load the VTK file.");
         return;
     }
 
@@ -192,34 +208,40 @@ void MainWindow::openFile()
     item->setData(Qt::UserRole, QString::fromStdString(dsId));
     m_datasetList->setCurrentItem(item);
 
-    appendLog("加载数据集: " + filePath);
+    appendLog("Loaded dataset: " + filePath);
 }
 
 void MainWindow::exportCurrentDataset()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) return;
-
-    const QString outPath = QFileDialog::getSaveFileName(
-        this, "导出 VTK 文件", QString(), "VTK legacy (*.vtk)");
-
-    if (outPath.isEmpty()) return;
-
-    const bool ok = m_facade.saveDatasetToVTKFile(
-        toStdString(dsId), toStdString(outPath), true);
-
-    if (!ok) {
-        QMessageBox::warning(this, "导出失败", "当前数据集导出失败。");
+    if (dsId.isEmpty()) {
         return;
     }
 
-    appendLog("导出成功: " + outPath);
+    const QString outPath = QFileDialog::getSaveFileName(
+        this, "Export VTK File", QString(), "VTK legacy (*.vtk)");
+
+    if (outPath.isEmpty()) {
+        return;
+    }
+
+    const bool ok = m_facade.saveDatasetToVTKFile(
+        toStdString(dsId), toStdString(outPath), false);
+
+    if (!ok) {
+        QMessageBox::warning(this, "Export Failed", "Failed to export the current dataset.");
+        return;
+    }
+
+    appendLog("Exported dataset: " + outPath);
 }
 
 void MainWindow::computeGradient()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty() || m_arrayBox->currentText().isEmpty()) return;
+    if (dsId.isEmpty() || m_arrayBox->currentText().isEmpty()) {
+        return;
+    }
 
     CAEGradientRequest req;
     req.datasetId = toStdString(dsId);
@@ -233,20 +255,20 @@ void MainWindow::computeGradient()
     const bool ok = m_facade.computeGradient(req, meta);
 
     if (!ok) {
-        QMessageBox::warning(this, "计算失败", "梯度计算失败。");
+        QMessageBox::warning(this, "Compute Failed", "Gradient computation failed.");
         return;
     }
 
-    appendLog(QString("计算完成: %1, wall= %2 ms, gpu= %3 ms")
-        .arg(QString::fromStdString(meta.resultArrayName))
-        .arg(meta.computeWallMs, 0, 'f', 3)
-        .arg(meta.computeGpuMs, 0, 'f', 3));
+    appendLog(QString("Computed: %1, wall=%2 ms, gpu=%3 ms")
+                  .arg(QString::fromStdString(meta.resultArrayName))
+                  .arg(meta.computeWallMs, 0, 'f', 3)
+                  .arg(meta.computeGpuMs, 0, 'f', 3));
 
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
 
-    int idx = m_arrayBox->findText(QString::fromStdString(meta.resultArrayName));
+    const int idx = m_arrayBox->findText(QString::fromStdString(meta.resultArrayName));
     if (idx >= 0) {
         m_arrayBox->setCurrentIndex(idx);
     }
@@ -271,10 +293,14 @@ void MainWindow::handleAssociationChanged()
 void MainWindow::handleArrayChanged()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) return;
+    if (dsId.isEmpty()) {
+        return;
+    }
 
     std::vector<CAEFieldInfo> fields;
-    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) return;
+    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) {
+        return;
+    }
 
     const QString currentName = m_arrayBox->currentText();
     int comps = 1;
@@ -294,10 +320,14 @@ void MainWindow::refreshFieldList()
     m_arrayBox->clear();
 
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) return;
+    if (dsId.isEmpty()) {
+        return;
+    }
 
     std::vector<CAEFieldInfo> fields;
-    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) return;
+    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) {
+        return;
+    }
 
     for (const auto& f : fields) {
         m_arrayBox->addItem(QString::fromStdString(f.name));
@@ -310,33 +340,37 @@ void MainWindow::refreshSummary()
 {
     const QString dsId = selectedDatasetId();
     if (dsId.isEmpty()) {
-        m_summaryLabel->setText("未选择数据集");
+        m_summaryLabel->setText("No dataset selected");
         return;
     }
 
     CAEDatasetSummary s;
     if (!m_facade.getDatasetSummary(toStdString(dsId), s)) {
-        m_summaryLabel->setText("读取摘要失败");
+        m_summaryLabel->setText("Failed to read dataset summary");
         return;
     }
 
     m_summaryLabel->setText(
-        QString("名称: %1\n点数: %2\n单元数: %3\n网格类型: %4")
-        .arg(QString::fromStdString(s.displayName))
-        .arg(static_cast<qulonglong>(s.pointCount))
-        .arg(static_cast<qulonglong>(s.cellCount))
-        .arg(s.gridClass == CAEGridClass::Regular ? "Regular" : "Unstructured"));
+        QString("Name: %1\nPoints: %2\nCells: %3\nGrid: %4")
+            .arg(QString::fromStdString(s.displayName))
+            .arg(static_cast<qulonglong>(s.pointCount))
+            .arg(static_cast<qulonglong>(s.cellCount))
+            .arg(s.gridClass == CAEGridClass::Regular ? "Regular" : "Unstructured"));
 }
 
 void MainWindow::refreshResultLog()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) return;
+    if (dsId.isEmpty()) {
+        return;
+    }
 
     CAEDatasetSummary s;
-    if (!m_facade.getDatasetSummary(toStdString(dsId), s)) return;
+    if (!m_facade.getDatasetSummary(toStdString(dsId), s)) {
+        return;
+    }
 
-    appendLog("当前结果数量: " + QString::number(static_cast<int>(s.results.size())));
+    appendLog("Result count: " + QString::number(static_cast<int>(s.results.size())));
 }
 
 void MainWindow::renderSelectedArray()
@@ -344,7 +378,9 @@ void MainWindow::renderSelectedArray()
     const QString dsId = selectedDatasetId();
     const QString arrayName = m_arrayBox->currentText();
 
-    if (dsId.isEmpty() || arrayName.isEmpty()) return;
+    if (dsId.isEmpty() || arrayName.isEmpty()) {
+        return;
+    }
 
     vtkSmartPointer<vtkDataSet> ds;
     if (!m_facade.exportDatasetToVTK(toStdString(dsId), ds) || !ds) {
@@ -356,8 +392,7 @@ void MainWindow::renderSelectedArray()
 
     if (currentAssociation() == CAEFieldAssociation::Point) {
         mapper->SetScalarModeToUsePointFieldData();
-    }
-    else {
+    } else {
         mapper->SetScalarModeToUseCellFieldData();
     }
 

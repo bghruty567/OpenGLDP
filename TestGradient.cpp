@@ -18,11 +18,8 @@
 VTK_MODULE_INIT(vtkRenderingOpenGL2);
 VTK_MODULE_INIT(vtkRenderingFreeType);
 
-#include "gl_context_utils.h"
-#include <vtkOpenGLRenderWindow.h>
-
 #include <glad/glad.h>
-#include <windows.h>
+#include "gl_context_utils.h"
 
 #include <string>
 #include <vector>
@@ -36,7 +33,7 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 
 int main(int argc, char** argv)
 {
-    std::string path = "Data\\uGridEx.vtk";
+    std::string path = "Data\\hexa.vtk";
     if (argc >= 2) path = argv[1];
 
     {

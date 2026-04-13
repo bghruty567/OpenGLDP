@@ -1,5 +1,7 @@
 #include "CAEProcessingFacade.h"
+#include <vtkDataSetWriter.h>
 #include <vtkDataSetReader.h>
+#include <vtkNew.h>
 #include <algorithm>
 #include <chrono>
 
@@ -98,6 +100,10 @@ bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
     std::vector<float> grad;
     bool ok = false;
 
+    // The GUI owns a separate VTK/Qt render context. Make the facade's
+    // compute context current before issuing any GL commands.
+    m_gl.makeCurrent();
+
     auto t0 = std::chrono::high_resolution_clock::now();
     if (method == CAEGradientMethod::FiniteDifference) {
         ok = computeByFD(rec, *src, grad);
@@ -150,6 +156,25 @@ bool CAEProcessingFacade::exportDatasetToVTK(const std::string& datasetId, vtkSm
     if (!conv.convertInternalToVTK()) return false;
     outVtk = conv.vtkData;
     return outVtk != nullptr;
+}
+
+bool CAEProcessingFacade::saveDatasetToVTKFile(const std::string& datasetId, const std::string& filePath, bool binary) const
+{
+    vtkSmartPointer<vtkDataSet> outVtk;
+    if (!exportDatasetToVTK(datasetId, outVtk) || !outVtk) {
+        return false;
+    }
+
+    vtkNew<vtkDataSetWriter> writer;
+    writer->SetFileName(filePath.c_str());
+    writer->SetInputData(outVtk);
+    if (binary) {
+        writer->SetFileTypeToBinary();
+    }
+    else {
+        writer->SetFileTypeToASCII();
+    }
+    return writer->Write() == 1;
 }
 
 bool CAEProcessingFacade::getDatasetSummary(const std::string& datasetId, CAEDatasetSummary& outSummary) const

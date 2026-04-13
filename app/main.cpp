@@ -1,7 +1,8 @@
+#include "MainWindow.h"
+
 #include <QApplication>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
-#include "MainWindow.h"
 
 int main(int argc, char* argv[])
 {

@@ -48,6 +48,7 @@ public:
 	* @brief 将内部数据集转换为VTK数据集，供外部使用或保存到文件等操作
     */
     bool exportDatasetToVTK(const std::string& datasetId, vtkSmartPointer<vtkDataSet>& outVtk) const;
+    bool saveDatasetToVTKFile(const std::string& datasetId, const std::string& filePath, bool binary = true) const;
     /*
 	* @brief 获取指定数据集和字段的原始数据数组，用于外部分析或验证等目的
     */

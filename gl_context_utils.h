@@ -1,9 +1,9 @@
 // c:\Users\lenovo\Desktop\bishe\tests\gl_context_utils.h
 #pragma once
+#include <glad/glad.h>
 #include <vtkRenderWindow.h>
 #include <vtkOpenGLRenderWindow.h>
 #include <vtkRenderer.h>
-#include <glad/glad.h>
 #include <iostream>
 
 /*
