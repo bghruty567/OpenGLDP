@@ -9,6 +9,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
 class QPushButton;
+class QCheckBox;
 class QLabel;
 class QPlainTextEdit;
 class QVTKOpenGLNativeWidget;
@@ -38,6 +39,7 @@ private slots:
     void openFile();
     void exportCurrentDataset();
     void computeGradient();
+    void computeMultiScaleOptimization();
     void handleDatasetChanged();
     void handleAssociationChanged();
     void handleArrayChanged();
@@ -59,6 +61,23 @@ private:
     QPushButton* m_openBtn = nullptr;
     QPushButton* m_exportBtn = nullptr;
     QPushButton* m_computeBtn = nullptr;
+
+    QPushButton* m_optimizeBtn = nullptr;
+
+    QSpinBox* m_msLevelsSpin = nullptr;
+    QSpinBox* m_msIterSpin = nullptr;
+
+    QDoubleSpinBox* m_msSpatialSigmaFactorSpin = nullptr;
+    QDoubleSpinBox* m_msRangeSigmaFactorSpin = nullptr;
+    QDoubleSpinBox* m_msLevelScaleSpin = nullptr;
+    QDoubleSpinBox* m_msEdgeSigmaFactorSpin = nullptr;
+
+    QDoubleSpinBox* m_msGain0Spin = nullptr;
+    QDoubleSpinBox* m_msGain1Spin = nullptr;
+    QDoubleSpinBox* m_msGain2Spin = nullptr;
+
+    QCheckBox* m_msStoreIntermediateCheck = nullptr;
+
 
     QVTKOpenGLNativeWidget* m_vtkWidget = nullptr;
     QPlainTextEdit* m_log = nullptr;

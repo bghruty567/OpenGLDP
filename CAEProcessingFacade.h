@@ -4,6 +4,7 @@
 #include "GLGradientEngine.h"
 #include "VTKDataConverter.h"
 #include "OpenGLManager.h"
+#include "GLFilterEngine.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -44,6 +45,9 @@ public:
 	* @brief 计算指定数据集和字段的梯度，支持有限差分和加权最小二乘两种方法，并返回计算结果的元信息，包括结果数组名称、计算时间等
     */
     bool computeGradient(const CAEGradientRequest& req, CAEGradientResultMeta& outMeta);
+
+    bool computeMultiScaleDecompositionAndFusion(const CAEMultiScaleRequest& req, CAEMultiScaleResultMeta& outMeta);
+
     /*
 	* @brief 将内部数据集转换为VTK数据集，供外部使用或保存到文件等操作
     */
@@ -74,6 +78,7 @@ private:
 
 	OpenGLManager m_gl;
     GLGradientEngine m_engine;
+     GLFilterEngine m_filter;
 	bool m_initialized = false;//是否成功初始化
     std::unordered_map<std::string, std::unique_ptr<DatasetRecord>> m_records;
     std::uint64_t m_nextId = 1;

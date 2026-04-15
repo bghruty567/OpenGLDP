@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -110,6 +111,55 @@ void MainWindow::buildUi()
 
     m_computeBtn = new QPushButton("Compute Gradient", this);
 
+        m_msLevelsSpin = new QSpinBox(this);
+    m_msLevelsSpin->setRange(1, 3);
+    m_msLevelsSpin->setValue(3);
+
+    m_msIterSpin = new QSpinBox(this);
+    m_msIterSpin->setRange(1, 8);
+    m_msIterSpin->setValue(1);
+
+    m_msSpatialSigmaFactorSpin = new QDoubleSpinBox(this);
+    m_msSpatialSigmaFactorSpin->setRange(0.1, 20.0);
+    m_msSpatialSigmaFactorSpin->setDecimals(3);
+    m_msSpatialSigmaFactorSpin->setValue(1.5);
+
+    m_msRangeSigmaFactorSpin = new QDoubleSpinBox(this);
+    m_msRangeSigmaFactorSpin->setRange(0.01, 10.0);
+    m_msRangeSigmaFactorSpin->setDecimals(3);
+    m_msRangeSigmaFactorSpin->setValue(0.5);
+
+    m_msLevelScaleSpin = new QDoubleSpinBox(this);
+    m_msLevelScaleSpin->setRange(1.1, 5.0);
+    m_msLevelScaleSpin->setDecimals(3);
+    m_msLevelScaleSpin->setValue(1.8);
+
+    m_msEdgeSigmaFactorSpin = new QDoubleSpinBox(this);
+    m_msEdgeSigmaFactorSpin->setRange(0.01, 10.0);
+    m_msEdgeSigmaFactorSpin->setDecimals(3);
+    m_msEdgeSigmaFactorSpin->setValue(0.35);
+
+    m_msGain0Spin = new QDoubleSpinBox(this);
+    m_msGain0Spin->setRange(0.0, 3.0);
+    m_msGain0Spin->setDecimals(3);
+    m_msGain0Spin->setValue(1.0);
+
+    m_msGain1Spin = new QDoubleSpinBox(this);
+    m_msGain1Spin->setRange(0.0, 3.0);
+    m_msGain1Spin->setDecimals(3);
+    m_msGain1Spin->setValue(0.75);
+
+    m_msGain2Spin = new QDoubleSpinBox(this);
+    m_msGain2Spin->setRange(0.0, 3.0);
+    m_msGain2Spin->setDecimals(3);
+    m_msGain2Spin->setValue(0.5);
+
+    m_msStoreIntermediateCheck = new QCheckBox("Store intermediate smooth/detail arrays", this);
+    m_msStoreIntermediateCheck->setChecked(true);
+
+    m_optimizeBtn = new QPushButton("Run MultiScale Optimization", this);
+
+
     form->addRow("Association", m_assocBox);
     form->addRow("Array", m_arrayBox);
     form->addRow("Method", m_methodBox);
@@ -117,6 +167,23 @@ void MainWindow::buildUi()
     form->addRow("WLS Lambda", m_lambdaSpin);
     form->addRow("Visible Component", m_componentSpin);
     form->addRow("", m_computeBtn);
+
+    auto* optTitle = new QLabel("Data Optimization", this);
+    optTitle->setStyleSheet("font-weight: bold;");
+    form->addRow(optTitle);
+
+    form->addRow("MS Levels", m_msLevelsSpin);
+    form->addRow("MS Iter/Level", m_msIterSpin);
+    form->addRow("Spatial Sigma Factor", m_msSpatialSigmaFactorSpin);
+    form->addRow("Range Sigma Factor", m_msRangeSigmaFactorSpin);
+    form->addRow("Level Scale", m_msLevelScaleSpin);
+    form->addRow("Edge Sigma Factor", m_msEdgeSigmaFactorSpin);
+    form->addRow("Detail Gain L0", m_msGain0Spin);
+    form->addRow("Detail Gain L1", m_msGain1Spin);
+    form->addRow("Detail Gain L2", m_msGain2Spin);
+    form->addRow("", m_msStoreIntermediateCheck);
+    form->addRow("", m_optimizeBtn);
+
 
     auto* rightPanel = new QWidget(this);
     auto* rightLayout = new QVBoxLayout(rightPanel);
@@ -145,6 +212,8 @@ void MainWindow::bindSignals()
     connect(m_openBtn, &QPushButton::clicked, this, &MainWindow::openFile);
     connect(m_exportBtn, &QPushButton::clicked, this, &MainWindow::exportCurrentDataset);
     connect(m_computeBtn, &QPushButton::clicked, this, &MainWindow::computeGradient);
+    connect(m_optimizeBtn, &QPushButton::clicked, this, &MainWindow::computeMultiScaleOptimization);
+
 
     connect(m_datasetList, &QListWidget::currentRowChanged, this, &MainWindow::handleDatasetChanged);
     connect(m_assocBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::handleAssociationChanged);
@@ -273,6 +342,65 @@ void MainWindow::computeGradient()
         m_arrayBox->setCurrentIndex(idx);
     }
 
+    renderSelectedArray();
+}
+
+void MainWindow::computeMultiScaleOptimization()
+{
+    const QString dsId = selectedDatasetId();
+    if (dsId.isEmpty() || m_arrayBox->currentText().isEmpty()) {
+        return;
+    }
+
+    CAEMultiScaleRequest req;
+    req.datasetId = toStdString(dsId);
+    req.inputArrayName = toStdString(m_arrayBox->currentText());
+    req.association = currentAssociation();
+
+    req.levels = m_msLevelsSpin->value();
+    req.iterationsPerLevel = m_msIterSpin->value();
+    req.spatialSigmaFactor = static_cast<float>(m_msSpatialSigmaFactorSpin->value());
+    req.rangeSigmaFactor = static_cast<float>(m_msRangeSigmaFactorSpin->value());
+    req.levelScale = static_cast<float>(m_msLevelScaleSpin->value());
+    req.edgeSigmaFactor = static_cast<float>(m_msEdgeSigmaFactorSpin->value());
+
+    req.detailGain0 = static_cast<float>(m_msGain0Spin->value());
+    req.detailGain1 = static_cast<float>(m_msGain1Spin->value());
+    req.detailGain2 = static_cast<float>(m_msGain2Spin->value());
+
+    req.storeIntermediate = m_msStoreIntermediateCheck->isChecked();
+
+    CAEMultiScaleResultMeta meta;
+    const bool ok = m_facade.computeMultiScaleDecompositionAndFusion(req, meta);
+    if (!ok) {
+        QMessageBox::warning(this, "Optimization Failed", "Multi-scale optimization failed.");
+        return;
+    }
+
+    appendLog(QString("Optimized: %1 -> %2, levels=%3, wall=%4 ms, gpu=%5 ms")
+                  .arg(QString::fromStdString(meta.sourceArrayName))
+                  .arg(QString::fromStdString(meta.fusedArrayName))
+                  .arg(meta.numLevels)
+                  .arg(meta.computeWallMs, 0, 'f', 3)
+                  .arg(meta.computeGpuMs, 0, 'f', 3));
+
+    for (const auto& name : meta.smoothArrayNames) {
+        appendLog("  smooth: " + QString::fromStdString(name));
+    }
+    for (const auto& name : meta.detailArrayNames) {
+        appendLog("  detail: " + QString::fromStdString(name));
+    }
+
+    refreshFieldList();
+    refreshSummary();
+    refreshResultLog();
+
+    const int idx = m_arrayBox->findText(QString::fromStdString(meta.fusedArrayName));
+    if (idx >= 0) {
+        m_arrayBox->setCurrentIndex(idx);
+    }
+
+    m_componentSpin->setValue(0);
     renderSelectedArray();
 }
 

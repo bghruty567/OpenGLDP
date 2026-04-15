@@ -83,7 +83,10 @@ add_library(opengldp_core STATIC
     gl_context_utils.h
     VTKDataConverter.h
     VTKDataConverter.cpp
+    GLFilterEngine.h
+    GLFilterEngine.cpp
     ${OPENGDP_GLAD_SOURCE}
+    GLFilterEngine.cpp
 )
 
 target_include_directories(opengldp_core PUBLIC
@@ -116,6 +119,14 @@ target_link_libraries(opengldp_benchmark PRIVATE
     opengldp_core
 )
 
+add_executable(opengldp_multiscale_test
+    TestMultiScale.cpp
+)
+
+target_link_libraries(opengldp_multiscale_test PRIVATE
+    opengldp_core
+)
+
 add_custom_command(TARGET opengldp_gui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Shaders
@@ -134,7 +145,18 @@ add_custom_command(TARGET opengldp_benchmark POST_BUILD
             $<TARGET_FILE_DIR:opengldp_benchmark>/Data
 )
 
+add_custom_command(TARGET opengldp_multiscale_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Shaders
+            $<TARGET_FILE_DIR:opengldp_multiscale_test>/Shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Data
+            $<TARGET_FILE_DIR:opengldp_multiscale_test>/Data
+)
+
+
 vtk_module_autoinit(
-    TARGETS opengldp_gui opengldp_benchmark
+    TARGETS opengldp_gui opengldp_benchmark opengldp_multiscale_test
     MODULES ${OPENGDP_VTK_LIBS}
 )
+

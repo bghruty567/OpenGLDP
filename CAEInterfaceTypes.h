@@ -48,6 +48,42 @@ struct CAEGradientResultMeta {
     double computeGpuMs = 0.0;
 };
 
+
+struct CAEMultiScaleRequest {
+    std::string datasetId;
+    std::string inputArrayName;
+    CAEFieldAssociation association = CAEFieldAssociation::Point;
+
+    int levels = 3;                 // 首版建议 1~3
+    int iterationsPerLevel = 1;
+
+    float spatialSigmaFactor = 1.5f; // 相对平均邻边长度
+    float rangeSigmaFactor = 0.5f;   // 相对场标准差
+    float levelScale = 1.8f;         // 每层空间sigma放大倍数
+
+    float edgeSigmaFactor = 0.35f;   // 融合时的细节抑制阈值
+    float detailGain0 = 1.0f;
+    float detailGain1 = 0.75f;
+    float detailGain2 = 0.5f;
+
+    bool storeIntermediate = true;   // 是否把 s1/s2/s3 和 d0/d1/d2 存回 DataObject
+};
+
+struct CAEMultiScaleResultMeta {
+    std::string sourceArrayName;
+    CAEFieldAssociation association = CAEFieldAssociation::Point;
+    int numLevels = 0;
+    int inputComponents = 1;
+
+    std::vector<std::string> smoothArrayNames;
+    std::vector<std::string> detailArrayNames;
+    std::string baseArrayName;
+    std::string fusedArrayName;
+
+    double computeWallMs = 0.0;
+    double computeGpuMs = 0.0;
+};
+
 struct CAEDatasetSummary {
     std::string datasetId;
     std::string displayName;
