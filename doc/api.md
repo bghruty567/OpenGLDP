@@ -415,6 +415,16 @@
   - 初始化梯度引擎，并打开 GPU 计时。
 - **返回：** 成功返回 `true`。
 
+#### `void setAnalyticBenchmarkEnabled(bool enabled);`
+
+- **功能：** 控制加载数据集时是否自动追加 `benchmark_*` 与 `*_exact_grad` 解析 benchmark 数组。
+- **默认行为：** 默认关闭。
+- **建议：** 仅测试程序显式开启；GUI 不应使用该开关。
+
+#### `bool isAnalyticBenchmarkEnabled() const;`
+
+- **功能：** 查询当前 Facade 实例是否会在加载时追加解析 benchmark 数组。
+
 #### `std::string loadDatasetFromVTKFile(const std::string& filePath);`
 
 - **功能：** 从 VTK Legacy 文件中加载数据集并转换为内部格式。
@@ -422,7 +432,8 @@
   1. 使用 `vtkDataSetReader` 读取文件；
   2. 创建 `DatasetRecord`；
   3. 使用 `VTKDataConverter` 填充 `DataObject`；
-  4. 分配 `datasetId`（形如 `ds_1`），放入内部 map。
+  4. 若已打开 `setAnalyticBenchmarkEnabled(true)`，则追加解析 benchmark 数组；
+  5. 分配 `datasetId`（形如 `ds_1`），放入内部 map。
 - **返回：**
   - 成功：返回新建的 `datasetId`；
   - 失败：返回空字符串。
@@ -447,8 +458,12 @@
   2. 根据 `inputArrayName` + `association` 查找 `DataArray`；
   3. 若 `req.method == Auto`：
      - 规则网格 => FD；
-     - 非结构化网格 => WLS；
-  4. 调用 `computeByFD` or `computeByWLS`；
+     - 非结构化网格 => AWLS；
+  4. 按网格与单元类型优先尝试更接近局部导数结构的专用路线：
+     - 规则网格 => `computeByFD`；
+     - 3D 非结构点数据 => `computeVolumePointGradientByCellPatches`；
+     - 2D 非结构点/单元数据 => 局部最小二乘算子缓存；
+     - 若专用路线不可用，再退到 `computeByWLS` / `computeByAdaptiveWLS`；
   5. 使用 `upsertDataArray` 将结果写回到 `DataObject`；
   6. 填写 `CAEGradientResultMeta` 并追加到 `DatasetRecord::results`。
 - **返回：** 成功返回 `true`。
@@ -480,6 +495,12 @@
 ```cpp
 CAEProcessingFacade facade;
 if (!facade.initialize("Shaders")) { /* 处理错误 */ }
+```
+
+如果需要测试解析 benchmark：
+
+```cpp
+facade.setAnalyticBenchmarkEnabled(true);
 ```
 
 2. 加载数据集：
@@ -529,9 +550,11 @@ facade.exportDatasetToVTK(dsId, out);
     - 字段关联类型（point/cell）；
     - 字段名（可选）；
     - 重复次数 reps（用于计时统计）。
+    - `--analytic-bench`（可选，显式打开解析 benchmark）
   - 使用 `CAEProcessingFacade` 完成 GPU 端梯度计算；
   - 使用 `vtkGradientFilter` 完成 CPU 端梯度计算；
-  - 计算 MAE / RMSE / 最大误差；
+  - 优先使用 `*_exact_grad` 或 `vtkGradientFilter` 作为参考；
+  - 计算 `NMAE_vec / NRMSE_vec / SoftRel_P90 / Angle_P90_deg / ScaleBias` 等向量指标；
   - 打印 OpenGL 与 VTK 的时间统计；
   - 将结果写入导出的 VTK 数据集，并用 VTK 窗口展示梯度模长的对比。
 

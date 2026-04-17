@@ -13,7 +13,102 @@
 #include <vtkUnstructuredGrid.h>
 #include <vtkCell.h>
 #include <vtkCellType.h>
+#include <vtkIdList.h>
+#include <vtkNew.h>
 #include <vtkSmartPointer.h>
+
+namespace {
+void appendNeighborCells(vtkDataSet* data,
+                         vtkIdType cellId,
+                         vtkIdList* sharedEntityPointIds,
+                         std::set<vtkIdType>& out)
+{
+    if (!data || !sharedEntityPointIds || sharedEntityPointIds->GetNumberOfIds() <= 0) {
+        return;
+    }
+
+    vtkNew<vtkIdList> neighborIds;
+    data->GetCellNeighbors(cellId, sharedEntityPointIds, neighborIds);
+    for (vtkIdType i = 0; i < neighborIds->GetNumberOfIds(); ++i) {
+        vtkIdType nb = neighborIds->GetId(i);
+        if (nb != cellId) {
+            out.insert(nb);
+        }
+    }
+}
+
+void collectPointSharedCellNeighbors(vtkStaticCellLinks* cellLinks,
+                                     vtkCell* cell,
+                                     vtkIdType cellId,
+                                     std::set<vtkIdType>& out)
+{
+    if (!cellLinks || !cell) {
+        return;
+    }
+
+    vtkIdList* pointIds = cell->GetPointIds();
+    for (vtkIdType pi = 0; pi < pointIds->GetNumberOfIds(); ++pi) {
+        vtkIdType ptId = pointIds->GetId(pi);
+        const vtkIdType* usingCellIds = cellLinks->GetCells(ptId);
+        vtkIdType nc = cellLinks->GetNumberOfCells(ptId);
+        for (vtkIdType ci = 0; ci < nc; ++ci) {
+            vtkIdType nbCellId = usingCellIds[ci];
+            if (nbCellId != cellId) {
+                out.insert(nbCellId);
+            }
+        }
+    }
+}
+
+void collectTopologicalCellNeighbors(vtkDataSet* data,
+                                     vtkStaticCellLinks* cellLinks,
+                                     vtkIdType cellId,
+                                     std::set<vtkIdType>& out)
+{
+    vtkCell* cell = data ? data->GetCell(cellId) : nullptr;
+    if (!cell) {
+        return;
+    }
+
+    bool usedTopologicalAdjacency = false;
+    const int dim = cell->GetCellDimension();
+
+    if (dim >= 3) {
+        const int numFaces = cell->GetNumberOfFaces();
+        for (int fi = 0; fi < numFaces; ++fi) {
+            vtkCell* face = cell->GetFace(fi);
+            if (!face) continue;
+            vtkIdList* ids = face->GetPointIds();
+            if (!ids || ids->GetNumberOfIds() < 3) continue;
+            appendNeighborCells(data, cellId, ids, out);
+            usedTopologicalAdjacency = true;
+        }
+    } else if (dim == 2) {
+        const int numEdges = cell->GetNumberOfEdges();
+        for (int ei = 0; ei < numEdges; ++ei) {
+            vtkCell* edge = cell->GetEdge(ei);
+            if (!edge) continue;
+            vtkIdList* ids = edge->GetPointIds();
+            if (!ids || ids->GetNumberOfIds() < 2) continue;
+            appendNeighborCells(data, cellId, ids, out);
+            usedTopologicalAdjacency = true;
+        }
+    } else if (dim == 1) {
+        vtkNew<vtkIdList> endpoint;
+        vtkIdList* pointIds = cell->GetPointIds();
+        for (vtkIdType pi = 0; pi < pointIds->GetNumberOfIds(); ++pi) {
+            endpoint->Reset();
+            endpoint->InsertNextId(pointIds->GetId(pi));
+            appendNeighborCells(data, cellId, endpoint, out);
+            usedTopologicalAdjacency = true;
+        }
+    }
+
+    if (!usedTopologicalAdjacency) {
+        collectPointSharedCellNeighbors(cellLinks, cell, cellId, out);
+    }
+}
+}
 
 VTKDataConverter::VTKDataConverter() {}
 
@@ -261,7 +356,7 @@ int VTKDataConverter ::convertUnstructuredGrid() {
     this->convertPointInCellNeighbors();
     //this->convertPointNeighborsByKNN(20);
     //this->convertPointNeighborsRobust(48,100);
-	//this->convertPointNeighbors();
+    //this->convertPointNeighbors();
     if (!this->convertPointNeighborsRobust(12, 24)) {
         this->convertPointNeighbors();
     }
@@ -341,18 +436,7 @@ int VTKDataConverter::convertCellNeighbors() {
             continue;
         }
 
-        vtkIdList* pointIds = cell->GetPointIds();
-        for (vtkIdType pi = 0; pi < pointIds->GetNumberOfIds(); ++pi) {
-            vtkIdType ptId = pointIds->GetId(pi);
-            const vtkIdType* usingCellIds = cellLinks->GetCells(ptId);
-            vtkIdType nc = cellLinks->GetNumberOfCells(ptId);
-            for (vtkIdType ci = 0; ci < nc; ++ci) {
-                vtkIdType nbCellId = usingCellIds[ci];
-                if (nbCellId != cellId) {
-                    neighborCellIds.insert(nbCellId);
-                }
-            }
-        }
+        collectTopologicalCellNeighbors(this->vtkData, cellLinks, cellId, neighborCellIds);
 
         for (const auto& nb : neighborCellIds) {
             this->internalData->cellNeighbors.push_back(static_cast<int>(nb));
@@ -432,6 +516,7 @@ int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
 
         vtkIdType numCells = cellLinks->GetNumberOfCells(ptId);
         const vtkIdType* cellIds = cellLinks->GetCells(ptId);
+        const bool hasIncidentCells = numCells > 0;
         for (vtkIdType i = 0; i < numCells; ++i)
         {
             vtkCell* cell = this->vtkData->GetCell(cellIds[i]);
@@ -443,7 +528,7 @@ int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
             }
         }
 
-        if ((int)nbset.size() < minK)
+        if (hasIncidentCells && (int)nbset.size() < minK)
         {
             double qpos[3]; this->vtkData->GetPoint(ptId, qpos);
             double topoMeanDist = 0.0;

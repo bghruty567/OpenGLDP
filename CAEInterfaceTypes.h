@@ -17,7 +17,8 @@ enum class CAEGridClass {
 enum class CAEGradientMethod {
     Auto = 0,
     FiniteDifference = 1,
-    WeightedLeastSquares = 2
+    WeightedLeastSquares = 2,
+    AdaptiveWeightedLeastSquares = 3
 };
 
 
@@ -35,6 +36,16 @@ struct CAEGradientRequest {
     CAEGradientMethod method = CAEGradientMethod::Auto;
     float wlsExponent = 1.0f;
     float wlsLambda = 1e-3f;
+    bool useAdaptiveNeighborhood = true;
+    bool useAdaptiveDimension = true;
+    bool useAdaptiveRegularization = true;
+    int minNeighbors = 12;
+    int targetNeighbors = 20;
+    int maxNeighbors = 32;
+    float radiusScale = 2.5f;
+    float planeEigenRatio = 0.06f;
+    float lineEigenRatio = 0.02f;
+    float lambdaAmplify = 4.0f;
 };
 
 struct CAEGradientResultMeta {

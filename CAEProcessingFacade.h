@@ -25,6 +25,11 @@ public:
     */
     bool initialize(const std::string& shaderDir);
     /*
+	* @brief 控制是否在加载数据集时追加解析 benchmark 数组，默认关闭，仅建议测试程序显式开启
+    */
+    void setAnalyticBenchmarkEnabled(bool enabled);
+    bool isAnalyticBenchmarkEnabled() const;
+    /*
 	* @brief 从VTK文件加载数据集，返回一个唯一的字符串ID用于后续操作
     */
     std::string loadDatasetFromVTKFile(const std::string& filePath);
@@ -67,6 +72,23 @@ public:
     double getLastComputeGpuMs() const;
 
 private:
+
+    struct AdaptiveGradientSupport {
+        bool ready = false;
+        int minNeighbors = 0;
+        int targetNeighbors = 0;
+        int maxNeighbors = 0;
+        float radiusScale = 0.0f;
+        float planeEigenRatio = 0.0f;
+        float lineEigenRatio = 0.0f;
+        bool useAdaptiveNeighborhood = true;
+        std::vector<int> offsets;
+        std::vector<int> neighbors;
+        std::vector<float> frames;
+        std::vector<std::uint32_t> dimTags;
+        std::vector<float> quality;
+        std::vector<float> meanNeighborDistance;
+    };
     
 	struct DatasetRecord {//内部数据集记录结构，包含数据集ID、显示名称、数据对象、原始VTK数据集和计算结果等信息
         std::string id;
@@ -74,12 +96,26 @@ private:
         DataObject data;
         vtkSmartPointer<vtkDataSet> sourceVtk;
         std::vector<CAEGradientResultMeta> results;
+        AdaptiveGradientSupport pointSupport;
+        AdaptiveGradientSupport cellSupport;
+        bool lsqOperatorCacheBuilt = false;
+        bool lsqOperatorCacheSupported = false;
+        std::vector<int> lsqPointGradOffsets;
+        std::vector<int> lsqPointGradSources;
+        std::vector<float> lsqPointGradCoeffs4;
+        std::vector<int> lsqPointValueOffsets;
+        std::vector<int> lsqPointValueSources;
+        std::vector<float> lsqPointValueWeights;
+        std::vector<int> lsqCellGradOffsets;
+        std::vector<int> lsqCellGradSources;
+        std::vector<float> lsqCellGradCoeffs4;
     };
 
 	OpenGLManager m_gl;
     GLGradientEngine m_engine;
      GLFilterEngine m_filter;
 	bool m_initialized = false;//是否成功初始化
+    bool m_appendAnalyticBenchmarkArrays = false;
     std::unordered_map<std::string, std::unique_ptr<DatasetRecord>> m_records;
     std::uint64_t m_nextId = 1;
     double m_lastComputeWallMs = 0.0;
@@ -110,4 +146,8 @@ private:
 
     bool computeByFD(DatasetRecord& rec, const DataArray& src, std::vector<float>& outGrad) ;
     bool computeByWLS(DatasetRecord& rec, const DataArray& src, CAEFieldAssociation assoc, float exp, float lambda, std::vector<float>& outGrad) ;
+    bool computeByAdaptiveWLS(DatasetRecord& rec, const DataArray& src, const CAEGradientRequest& req, std::vector<float>& outGrad);
+    bool ensureAdaptiveSupport(DatasetRecord& rec, CAEFieldAssociation assoc, const CAEGradientRequest& req);
+    bool ensureLeastSquaresOperatorCache(DatasetRecord& rec);
+    bool tryComputeByLeastSquaresOperators(DatasetRecord& rec, const DataArray& src, CAEFieldAssociation assoc, std::vector<float>& outGrad);
 };

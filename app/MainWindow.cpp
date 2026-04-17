@@ -95,6 +95,7 @@ void MainWindow::buildUi()
     m_methodBox->addItem("Auto");
     m_methodBox->addItem("FiniteDifference");
     m_methodBox->addItem("WeightedLeastSquares");
+    m_methodBox->addItem("AdaptiveWeightedLeastSquares");
 
     m_wExpSpin = new QDoubleSpinBox(this);
     m_wExpSpin->setRange(0.1, 8.0);
@@ -249,6 +250,8 @@ CAEGradientMethod MainWindow::currentMethod() const
         return CAEGradientMethod::FiniteDifference;
     case 2:
         return CAEGradientMethod::WeightedLeastSquares;
+    case 3:
+        return CAEGradientMethod::AdaptiveWeightedLeastSquares;
     default:
         return CAEGradientMethod::Auto;
     }

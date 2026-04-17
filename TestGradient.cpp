@@ -24,9 +24,11 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 
 #include "CAEProcessingFacade.h"
@@ -40,20 +42,83 @@ int main(int argc, char** argv)
         std::string assocArg = "point";
         std::string arrayName;
         int reps = 5;
+        bool enableAnalyticBenchmarks = false;
         if (argc >= 3) assocArg = argv[2];
         if (argc >= 4) arrayName = argv[3];
-        if (argc >= 5) reps = std::max(1, atoi(argv[4]));
+
+        int nextArg = 4;
+        if (argc >= 5) {
+            char* endPtr = nullptr;
+            const long parsed = std::strtol(argv[4], &endPtr, 10);
+            if (endPtr && *endPtr == '\0') {
+                reps = std::max(1, static_cast<int>(parsed));
+                nextArg = 5;
+            }
+        }
+
+        auto parseBoolSwitch = [](std::string value, bool& out) -> bool {
+            std::transform(value.begin(), value.end(), value.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (value == "1" || value == "on" || value == "true" ||
+                value == "yes" || value == "enable" || value == "enabled") {
+                out = true;
+                return true;
+            }
+            if (value == "0" || value == "off" || value == "false" ||
+                value == "no" || value == "disable" || value == "disabled") {
+                out = false;
+                return true;
+            }
+            return false;
+        };
+
+        for (int argi = nextArg; argi < argc; ++argi) {
+            const std::string opt = argv[argi];
+            if (opt == "--analytic-bench" || opt == "--analytic-benchmark" ||
+                opt == "analytic" || opt == "benchmark") {
+                enableAnalyticBenchmarks = true;
+                continue;
+            }
+            if (opt == "--no-analytic-bench" || opt == "--no-analytic-benchmark") {
+                enableAnalyticBenchmarks = false;
+                continue;
+            }
+
+            constexpr const char* prefixes[] = {
+                "--analytic-bench=",
+                "--analytic-benchmark=",
+                "analytic=",
+                "benchmark="
+            };
+            bool handled = false;
+            for (const char* prefix : prefixes) {
+                const std::string key(prefix);
+                if (opt.rfind(key, 0) == 0) {
+                    const std::string value = opt.substr(key.size());
+                    if (!parseBoolSwitch(value, enableAnalyticBenchmarks)) {
+                        std::cerr << "invalid analytic benchmark switch: " << opt << "\n";
+                        return 1;
+                    }
+                    handled = true;
+                    break;
+                }
+            }
+            if (!handled) {
+                std::cerr << "unknown option: " << opt << "\n";
+                return 1;
+            }
+        }
 
         CAEFieldAssociation assoc = (assocArg == "cell" || assocArg == "CELL")
             ? CAEFieldAssociation::Cell
             : CAEFieldAssociation::Point;
-        //assoc = CAEFieldAssociation::Cell;
 
         CAEProcessingFacade facade;
         if (!facade.initialize("Shaders")) {
             std::cerr << "facade init failed\n";
             return 1;
         }
+        facade.setAnalyticBenchmarkEnabled(enableAnalyticBenchmarks);
 
         std::string dsId = facade.loadDatasetFromVTKFile(path);
         if (dsId.empty()) {
@@ -67,6 +132,7 @@ int main(int argc, char** argv)
             return 3;
         }
         std::cout << "Dataset=" << s.displayName << " points=" << s.pointCount << " cells=" << s.cellCount << std::endl;
+        std::cout << "AnalyticBenchmarks=" << (enableAnalyticBenchmarks ? "ON" : "OFF") << std::endl;
 
         std::vector<CAEFieldInfo> fields;
         if (!facade.listFields(dsId, assoc, fields) || fields.empty()) {
@@ -83,6 +149,13 @@ int main(int argc, char** argv)
             arrayName = fields.front().name;
             std::cout << "Use default array: " << arrayName << "\n";
         }
+        auto fieldIt = std::find_if(fields.begin(), fields.end(),
+            [&](const CAEFieldInfo& f) { return f.name == arrayName; });
+        if (fieldIt == fields.end()) {
+            std::cerr << "selected array missing\n";
+            return 4;
+        }
+        const int inputComponents = fieldIt->numComponents;
 
         CAEGradientRequest req;
         req.datasetId = dsId;
@@ -113,92 +186,212 @@ int main(int argc, char** argv)
             return 6;
         }
 
-        vtkNew<vtkDataSetReader> rr;
-        rr->SetFileName(path.c_str());
-        rr->Update();
-        vtkDataSet* ds = vtkDataSet::SafeDownCast(rr->GetOutput());
-        if (!ds) {
-            std::cerr << "vtk read failed\n";
-            return 7;
-        }
+        std::vector<float> grad_ref;
+        int refComps = 0;
+        size_t refTuples = 0;
+        bool useAnalyticReference = false;
+        std::string referenceArrayName = arrayName + "_exact_grad";
+        double refTimeAvg = 0.0;
+        double refTimeMin = 0.0;
 
-        vtkNew<vtkGradientFilter> gf;
-        gf->SetResultArrayName("grad_vtk");
-        int vtkAssoc = (assoc == CAEFieldAssociation::Point)
-            ? vtkDataObject::FIELD_ASSOCIATION_POINTS
-            : vtkDataObject::FIELD_ASSOCIATION_CELLS;
-        gf->SetInputArrayToProcess(0, 0, 0, vtkAssoc, arrayName.c_str());
-        gf->SetInputData(ds);
-
-        double vtkSum = 0.0, vtkMin = std::numeric_limits<double>::max();
-        for (int i = 0; i < reps; ++i) {
-            gf->Modified();
-            auto t0 = std::chrono::high_resolution_clock::now();
-            gf->Update();
-            auto t1 = std::chrono::high_resolution_clock::now();
-            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            vtkSum += ms;
-            vtkMin = std::min(vtkMin, ms);
-        }
-
-        vtkDataSet* out = vtkDataSet::SafeDownCast(gf->GetOutput());
-        vtkDataArray* ga = (assoc == CAEFieldAssociation::Point)
-            ? out->GetPointData()->GetArray("grad_vtk")
-            : out->GetCellData()->GetArray("grad_vtk");
-        if (!ga) {
-            std::cerr << "vtk gradient array missing\n";
-            return 8;
-        }
-
-        int vtkComps = ga->GetNumberOfComponents();
-        size_t vtkTuples = static_cast<size_t>(ga->GetNumberOfTuples());
-        std::vector<float> grad_vtk(vtkTuples * static_cast<size_t>(vtkComps));
-        for (size_t i = 0; i < vtkTuples; ++i) {
-            for (int c = 0; c < vtkComps; ++c) {
-                grad_vtk[i * static_cast<size_t>(vtkComps) + c] = static_cast<float>(ga->GetComponent(static_cast<vtkIdType>(i), c));
+        if (facade.getArrayData(dsId, referenceArrayName, assoc, grad_ref, refComps) &&
+            refComps == inputComponents * 3) {
+            useAnalyticReference = true;
+            refTuples = grad_ref.size() / static_cast<size_t>(refComps);
+        } else {
+            vtkNew<vtkDataSetReader> rr;
+            rr->SetFileName(path.c_str());
+            rr->Update();
+            vtkDataSet* ds = vtkDataSet::SafeDownCast(rr->GetOutput());
+            if (!ds) {
+                std::cerr << "vtk read failed\n";
+                return 7;
             }
+
+            vtkNew<vtkGradientFilter> gf;
+            gf->SetResultArrayName("grad_vtk");
+            int vtkAssoc = (assoc == CAEFieldAssociation::Point)
+                ? vtkDataObject::FIELD_ASSOCIATION_POINTS
+                : vtkDataObject::FIELD_ASSOCIATION_CELLS;
+            gf->SetInputArrayToProcess(0, 0, 0, vtkAssoc, arrayName.c_str());
+            gf->SetInputData(ds);
+
+            double vtkSum = 0.0;
+            double vtkMin = std::numeric_limits<double>::max();
+            for (int i = 0; i < reps; ++i) {
+                gf->Modified();
+                auto t0 = std::chrono::high_resolution_clock::now();
+                gf->Update();
+                auto t1 = std::chrono::high_resolution_clock::now();
+                double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                vtkSum += ms;
+                vtkMin = std::min(vtkMin, ms);
+            }
+
+            vtkDataSet* out = vtkDataSet::SafeDownCast(gf->GetOutput());
+            vtkDataArray* ga = (assoc == CAEFieldAssociation::Point)
+                ? out->GetPointData()->GetArray("grad_vtk")
+                : out->GetCellData()->GetArray("grad_vtk");
+            if (!ga) {
+                std::cerr << "vtk gradient array missing\n";
+                return 8;
+            }
+
+            refComps = ga->GetNumberOfComponents();
+            refTuples = static_cast<size_t>(ga->GetNumberOfTuples());
+            grad_ref.resize(refTuples * static_cast<size_t>(refComps));
+            for (size_t i = 0; i < refTuples; ++i) {
+                for (int c = 0; c < refComps; ++c) {
+                    grad_ref[i * static_cast<size_t>(refComps) + c] = static_cast<float>(ga->GetComponent(static_cast<vtkIdType>(i), c));
+                }
+            }
+            refTimeAvg = vtkSum / std::max(reps, 1);
+            refTimeMin = vtkMin;
         }
 
         size_t glTuples = glComps > 0 ? grad_gl.size() / static_cast<size_t>(glComps) : 0;
-        size_t nTuple = std::min(glTuples, vtkTuples);
-        int nComp = std::min(glComps, vtkComps);
-        double maeAbs = 0.0, rmse = 0.0, maxAbs = 0.0;
-        double maeRel = 0.0, maxRel = 0.0;
-        size_t relCount = 0;
+        size_t nTuple = std::min(glTuples, refTuples);
+        int nComp = std::min(glComps, refComps);
+        if (nComp < 3) {
+            std::cerr << "gradient compare needs at least 3 components per tuple\n";
+            return 9;
+        }
+        int vecsPerTuple = nComp / 3;
+        int usedComps = vecsPerTuple * 3;
+        if (usedComps != nComp) {
+            std::cout << "Warning=component count " << nComp
+                      << " is not a multiple of 3, trailing components ignored\n";
+        }
+
+        size_t vecCount = nTuple * static_cast<size_t>(vecsPerTuple);
+        double vecMaeAbs = 0.0, vecRmseAccum = 0.0, vecMaxAbs = 0.0;
+        double refNormSum = 0.0, refNormSqSum = 0.0;
+        double dotSum = 0.0;
+
         for (size_t i = 0; i < nTuple; ++i) {
-            for (int c = 0; c < nComp; ++c) {
-                double glv = static_cast<double>(grad_gl[i * static_cast<size_t>(glComps) + c]);
-                double vtkv = static_cast<double>(grad_vtk[i * static_cast<size_t>(vtkComps) + c]);
-                double d = glv - vtkv;
-                double a = std::abs(d);
-                maeAbs += a;
-                rmse += d * d;
-                if (a > maxAbs) maxAbs = a;
-                double ref = std::abs(vtkv);
-                if (ref > 1e-3) {
-                    double r = a / ref;
-                    maeRel += r;
-                    if (r > maxRel) maxRel = r;
-                    ++relCount;
+            for (int v = 0; v < vecsPerTuple; ++v) {
+                size_t glBase = i * static_cast<size_t>(glComps) + static_cast<size_t>(v) * 3;
+                size_t refBase = i * static_cast<size_t>(refComps) + static_cast<size_t>(v) * 3;
+
+                double gx = static_cast<double>(grad_gl[glBase + 0]);
+                double gy = static_cast<double>(grad_gl[glBase + 1]);
+                double gz = static_cast<double>(grad_gl[glBase + 2]);
+                double rx = static_cast<double>(grad_ref[refBase + 0]);
+                double ry = static_cast<double>(grad_ref[refBase + 1]);
+                double rz = static_cast<double>(grad_ref[refBase + 2]);
+
+                double dx = gx - rx;
+                double dy = gy - ry;
+                double dz = gz - rz;
+                double errNorm = std::sqrt(dx * dx + dy * dy + dz * dz);
+                double refNorm = std::sqrt(rx * rx + ry * ry + rz * rz);
+
+                vecMaeAbs += errNorm;
+                vecRmseAccum += errNorm * errNorm;
+                if (errNorm > vecMaxAbs) vecMaxAbs = errNorm;
+                refNormSum += refNorm;
+                refNormSqSum += refNorm * refNorm;
+                dotSum += gx * rx + gy * ry + gz * rz;
+            }
+        }
+
+        double vecDenom = std::max<size_t>(vecCount, 1);
+        double vecRmse = std::sqrt(vecRmseAccum / vecDenom);
+        double vecMae = vecMaeAbs / vecDenom;
+        double refRms = std::sqrt(refNormSqSum / vecDenom);
+        double nmaeVec = refNormSum > 1e-12 ? (vecMaeAbs / refNormSum) : 0.0;
+        double nrmseVec = refNormSqSum > 1e-12 ? std::sqrt(vecRmseAccum / refNormSqSum) : 0.0;
+        double scaleBias = refNormSqSum > 1e-12 ? (dotSum / refNormSqSum) : 0.0;
+        double tau = std::max(1e-12, 0.05 * refRms);
+
+        std::vector<double> softRelValues;
+        std::vector<double> angleValues;
+        softRelValues.reserve(vecCount);
+        angleValues.reserve(vecCount);
+        double softRelSum = 0.0;
+        size_t lowRefCount = 0;
+        constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+
+        for (size_t i = 0; i < nTuple; ++i) {
+            for (int v = 0; v < vecsPerTuple; ++v) {
+                size_t glBase = i * static_cast<size_t>(glComps) + static_cast<size_t>(v) * 3;
+                size_t refBase = i * static_cast<size_t>(refComps) + static_cast<size_t>(v) * 3;
+
+                double gx = static_cast<double>(grad_gl[glBase + 0]);
+                double gy = static_cast<double>(grad_gl[glBase + 1]);
+                double gz = static_cast<double>(grad_gl[glBase + 2]);
+                double rx = static_cast<double>(grad_ref[refBase + 0]);
+                double ry = static_cast<double>(grad_ref[refBase + 1]);
+                double rz = static_cast<double>(grad_ref[refBase + 2]);
+
+                double dx = gx - rx;
+                double dy = gy - ry;
+                double dz = gz - rz;
+                double errNorm = std::sqrt(dx * dx + dy * dy + dz * dz);
+                double refNorm = std::sqrt(rx * rx + ry * ry + rz * rz);
+                double glNorm = std::sqrt(gx * gx + gy * gy + gz * gz);
+                double softRel = errNorm / std::max(refNorm, tau);
+
+                softRelValues.push_back(softRel);
+                softRelSum += softRel;
+                if (refNorm < tau) {
+                    ++lowRefCount;
+                }
+
+                if (glNorm > tau && refNorm > tau) {
+                    double cosTheta = (gx * rx + gy * ry + gz * rz) / (glNorm * refNorm);
+                    cosTheta = std::clamp(cosTheta, -1.0, 1.0);
+                    angleValues.push_back(std::acos(cosTheta) * kRadToDeg);
                 }
             }
         }
-        double denom = std::max<size_t>(1, nTuple * static_cast<size_t>(nComp));
-        maeAbs /= denom;
-        rmse = std::sqrt(rmse / denom);
-        double meanRel = relCount > 0 ? (maeRel / static_cast<double>(relCount)) : 0.0;
+
+        auto percentile = [](std::vector<double> values, double p) -> double {
+            if (values.empty()) return 0.0;
+            std::sort(values.begin(), values.end());
+            double pos = p * static_cast<double>(values.size() - 1);
+            size_t lo = static_cast<size_t>(std::floor(pos));
+            size_t hi = static_cast<size_t>(std::ceil(pos));
+            double t = pos - static_cast<double>(lo);
+            return values[lo] * (1.0 - t) + values[hi] * t;
+        };
+
+        double softRelMean = softRelValues.empty() ? 0.0 : (softRelSum / static_cast<double>(softRelValues.size()));
+        double softRelMedian = percentile(softRelValues, 0.5);
+        double softRelP90 = percentile(softRelValues, 0.9);
+        double angleMean = 0.0;
+        for (double angle : angleValues) angleMean += angle;
+        angleMean = angleValues.empty() ? 0.0 : (angleMean / static_cast<double>(angleValues.size()));
+        double angleP90 = percentile(angleValues, 0.9);
 
         std::cout << "Array=" << arrayName << " Assoc=" << (assoc == CAEFieldAssociation::Point ? "POINT" : "CELL") << "\n";
-        std::cout << "VTK_time_ms_avg=" << (vtkSum / reps) << " VTK_time_ms_min=" << vtkMin << "\n";
+        if (useAnalyticReference) {
+            std::cout << "Reference=ANALYTIC array=" << referenceArrayName << "\n";
+        } else {
+            std::cout << "Reference=VTK gradient filter\n";
+            std::cout << "VTK_time_ms_avg=" << refTimeAvg << " VTK_time_ms_min=" << refTimeMin << "\n";
+        }
         std::cout << "GL_wall_ms_avg=" << (glWallSum / reps) << " GL_wall_ms_min=" << glWallMin << "\n";
         std::cout << "GL_gpu_ms_avg=" << (glGpuSum / reps) << " GL_gpu_ms_min=" << glGpuMin << "\n";
-        std::cout << "Compare tuples=" << nTuple << " comps=" << nComp
-                  << " MAE_abs=" << maeAbs
-                  << " RMSE=" << rmse
-                  << " MAX_abs=" << maxAbs
-                  << " RelMAE(|VTK|>1e-3)=" << meanRel
-                  << " RelMAX(|VTK|>1e-3)=" << maxRel
-                  << " RelCount=" << relCount << "\n";
+        std::cout << "Compare tuples=" << nTuple
+                  << " comps=" << usedComps
+                  << " vecs_per_tuple=" << vecsPerTuple
+                  << " vec_count=" << vecCount << "\n";
+        std::cout << "VecErr_MAE_abs=" << vecMae
+                  << " VecErr_RMSE_abs=" << vecRmse
+                  << " VecErr_MAX_abs=" << vecMaxAbs << "\n";
+        std::cout << "RefScale_RMS=" << refRms
+                  << " NMAE_vec=" << nmaeVec
+                  << " NRMSE_vec=" << nrmseVec << "\n";
+        std::cout << "SoftRel_tau=" << tau
+                  << " SoftRel_mean=" << softRelMean
+                  << " SoftRel_median=" << softRelMedian
+                  << " SoftRel_P90=" << softRelP90
+                  << " LowRefCount=" << lowRefCount << "\n";
+        std::cout << "Angle_mean_deg=" << angleMean
+                  << " Angle_P90_deg=" << angleP90
+                  << " AngleCount=" << angleValues.size() << "\n";
+        std::cout << "ScaleBias=" << scaleBias << "\n";
 
         size_t show = std::min<size_t>(nTuple, 1000);
         for (size_t i = 0; i < show; ++i) {
@@ -206,9 +399,9 @@ int main(int argc, char** argv)
             for (int c = 0; c < nComp; ++c) {
                 std::cout << grad_gl[i * static_cast<size_t>(glComps) + c] << (c + 1 < nComp ? "," : "");
             }
-            std::cout << "] VTK=[";
+            std::cout << "] REF=[";
             for (int c = 0; c < nComp; ++c) {
-                std::cout << grad_vtk[i * static_cast<size_t>(vtkComps) + c] << (c + 1 < nComp ? "," : "");
+                std::cout << grad_ref[i * static_cast<size_t>(refComps) + c] << (c + 1 < nComp ? "," : "");
             }
             std::cout << "]\n";
         }
