@@ -1,8 +1,13 @@
 #include "CAEProcessingFacade.h"
 #include <vtkDataSetWriter.h>
 #include <vtkDataSetReader.h>
+#include <vtkDataArray.h>
+#include <vtkDataObject.h>
+#include <vtkGradientFilter.h>
 #include <vtkKdTreePointLocator.h>
+#include <vtkCellData.h>
 #include <vtkNew.h>
+#include <vtkPointData.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <algorithm>
@@ -74,6 +79,89 @@ bool gradientAssociationMatchesArray(const DataArray& src, CAEFieldAssociation a
         return src.dataType == POINT_DATA;
     }
     return src.dataType == CELL_DATA;
+}
+
+bool computeUnstructuredGradientByVTKFilter(const DataObject& data,
+                                            const DataArray& src,
+                                            CAEFieldAssociation assoc,
+                                            std::vector<float>& outGrad)
+{
+    if (data.gridType != DATA_OBJECT_TYPE_UNSTRUCTURED ||
+        !gradientAssociationMatchesArray(src, assoc) ||
+        src.numComponents <= 0) {
+        return false;
+    }
+
+    VTKDataConverter conv;
+    conv.bindVTKDataAndInternalData(nullptr, const_cast<DataObject*>(&data));
+    if (!conv.convertInternalToVTK() || !conv.vtkData) {
+        return false;
+    }
+
+    vtkDataSet* ds = conv.vtkData;
+    vtkNew<vtkGradientFilter> gf;
+    constexpr const char* kResultName = "__cae_tmp_grad";
+    const int vtkAssoc = (assoc == CAEFieldAssociation::Point)
+        ? vtkDataObject::FIELD_ASSOCIATION_POINTS
+        : vtkDataObject::FIELD_ASSOCIATION_CELLS;
+    gf->SetResultArrayName(kResultName);
+    gf->SetInputArrayToProcess(0, 0, 0, vtkAssoc, src.name.c_str());
+    gf->SetInputData(ds);
+    gf->Update();
+
+    vtkDataSet* out = vtkDataSet::SafeDownCast(gf->GetOutput());
+    if (!out) {
+        return false;
+    }
+
+    vtkDataArray* ga = (assoc == CAEFieldAssociation::Point)
+        ? out->GetPointData()->GetArray(kResultName)
+        : out->GetCellData()->GetArray(kResultName);
+    if (!ga) {
+        return false;
+    }
+
+    const int comps = ga->GetNumberOfComponents();
+    const vtkIdType tuples = ga->GetNumberOfTuples();
+    outGrad.resize(static_cast<size_t>(tuples) * static_cast<size_t>(comps));
+    for (vtkIdType i = 0; i < tuples; ++i) {
+        for (int c = 0; c < comps; ++c) {
+            outGrad[static_cast<size_t>(i) * static_cast<size_t>(comps) + static_cast<size_t>(c)] =
+                static_cast<float>(ga->GetComponent(i, c));
+        }
+    }
+    return true;
+}
+
+bool validateNeighborGraph(const std::vector<int>& offsets,
+                           const std::vector<int>& neighbors,
+                           size_t sampleCount)
+{
+    if (offsets.size() != sampleCount + 1u) {
+        return false;
+    }
+    if (offsets.empty() || offsets.front() != 0) {
+        return false;
+    }
+
+    int prev = 0;
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        const int off = offsets[i];
+        if (off < prev || off < 0 || static_cast<size_t>(off) > neighbors.size()) {
+            return false;
+        }
+        prev = off;
+    }
+    if (static_cast<size_t>(offsets.back()) != neighbors.size()) {
+        return false;
+    }
+
+    for (int nb : neighbors) {
+        if (nb < 0 || static_cast<size_t>(nb) >= sampleCount) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool buildRegularNeighbors(int nx, int ny, int nz, std::vector<int>& offsets, std::vector<int>& neighbors)
@@ -288,6 +376,36 @@ struct AdaptiveSupportData
     std::vector<float> quality;
     std::vector<float> meanNeighborDistance;
 };
+
+bool validateAdaptiveSupportData(const AdaptiveSupportData& support, size_t sampleCount)
+{
+    if (!validateNeighborGraph(support.offsets, support.neighbors, sampleCount)) {
+        return false;
+    }
+    if (support.frames.size() != sampleCount * 9u ||
+        support.dimTags.size() != sampleCount ||
+        support.quality.size() != sampleCount ||
+        support.meanNeighborDistance.size() != sampleCount) {
+        return false;
+    }
+
+    for (float v : support.frames) {
+        if (!std::isfinite(v)) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < sampleCount; ++i) {
+        if (support.dimTags[i] < 1u || support.dimTags[i] > 3u) {
+            return false;
+        }
+        if (!std::isfinite(support.quality[i]) ||
+            !std::isfinite(support.meanNeighborDistance[i]) ||
+            support.meanNeighborDistance[i] <= 0.0f) {
+            return false;
+        }
+    }
+    return true;
+}
 
 struct LocalSpectralInfo
 {
@@ -562,7 +680,8 @@ void supplementByKnn(vtkKdTreePointLocator* locator,
                      double maxAcceptDistance,
                      std::set<int>& inOut)
 {
-    if (!locator || desiredCount <= 0) {
+    const int pointCount = static_cast<int>(positions.size() / 3u);
+    if (!locator || desiredCount <= 0 || pointCount <= 1) {
         return;
     }
 
@@ -572,8 +691,9 @@ void supplementByKnn(vtkKdTreePointLocator* locator,
         positions[static_cast<size_t>(centerId) * 3 + 2]
     };
 
+    const int clampedQueryCount = std::max(1, std::min(queryCount + 1, pointCount));
     vtkNew<vtkIdList> ids;
-    locator->FindClosestNPoints(queryCount + 1, q, ids);
+    locator->FindClosestNPoints(clampedQueryCount, q, ids);
     for (vtkIdType t = 0; t < ids->GetNumberOfIds(); ++t) {
         const int j = static_cast<int>(ids->GetId(t));
         if (j == centerId || j < 0) {
@@ -839,7 +959,7 @@ bool buildAdaptiveGradientSupport(const std::vector<float>& positions,
     const size_t n = positions.size() / 3;
     if (n == 0 ||
         positions.size() % 3 != 0 ||
-        baseOffsets.size() != n + 1) {
+        !validateNeighborGraph(baseOffsets, baseNeighbors, n)) {
         return false;
     }
 
@@ -1043,6 +1163,10 @@ void appendAnalyticScalarBenchmarks(DataObject& data,
     std::vector<float> quadraticGrad(tupleCount * 3u, 0.0f);
     std::vector<float> trig(tupleCount, 0.0f);
     std::vector<float> trigGrad(tupleCount * 3u, 0.0f);
+    std::vector<float> cubic(tupleCount, 0.0f);
+    std::vector<float> cubicGrad(tupleCount * 3u, 0.0f);
+    std::vector<float> gaussian(tupleCount, 0.0f);
+    std::vector<float> gaussianGrad(tupleCount * 3u, 0.0f);
 
     for (size_t i = 0; i < tupleCount; ++i) {
         const double x = static_cast<double>(positions[i * 3u + 0]);
@@ -1071,6 +1195,25 @@ void appendAnalyticScalarBenchmarks(DataObject& data,
         trigGrad[i * 3u + 0] = static_cast<float>(kPi * std::cos(sx));
         trigGrad[i * 3u + 1] = static_cast<float>(-0.5 * kPi * std::sin(sy));
         trigGrad[i * 3u + 2] = static_cast<float>(0.25 * kPi * std::cos(sz));
+
+        cubic[i] = static_cast<float>(
+            (0.5 * xr * xr * xr - 0.35 * yr * yr * yr + 0.2 * zr * zr * zr +
+             0.15 * xr * yr * zr) / (L * L));
+        cubicGrad[i * 3u + 0] = static_cast<float>((1.5 * xr * xr + 0.15 * yr * zr) / (L * L));
+        cubicGrad[i * 3u + 1] = static_cast<float>((-1.05 * yr * yr + 0.15 * xr * zr) / (L * L));
+        cubicGrad[i * 3u + 2] = static_cast<float>((0.6 * zr * zr + 0.15 * xr * yr) / (L * L));
+
+        const double sigma = 0.35 * L;
+        const double sigma2 = sigma * sigma;
+        const double expo = -(
+            xr * xr +
+            0.7 * yr * yr +
+            1.3 * zr * zr) / sigma2;
+        const double g = std::exp(expo);
+        gaussian[i] = static_cast<float>(g);
+        gaussianGrad[i * 3u + 0] = static_cast<float>(g * (-2.0 * xr / sigma2));
+        gaussianGrad[i * 3u + 1] = static_cast<float>(g * (-1.4 * yr / sigma2));
+        gaussianGrad[i * 3u + 2] = static_cast<float>(g * (-2.6 * zr / sigma2));
     }
 
     data.upsertDataArray("benchmark_linear", linear, 1, type);
@@ -1079,12 +1222,101 @@ void appendAnalyticScalarBenchmarks(DataObject& data,
     data.upsertDataArray("benchmark_quadratic_exact_grad", quadraticGrad, 3, type);
     data.upsertDataArray("benchmark_trig", trig, 1, type);
     data.upsertDataArray("benchmark_trig_exact_grad", trigGrad, 3, type);
+    data.upsertDataArray("benchmark_cubic", cubic, 1, type);
+    data.upsertDataArray("benchmark_cubic_exact_grad", cubicGrad, 3, type);
+    data.upsertDataArray("benchmark_gaussian", gaussian, 1, type);
+    data.upsertDataArray("benchmark_gaussian_exact_grad", gaussianGrad, 3, type);
+}
+
+void appendAnalyticVectorBenchmarks(DataObject& data,
+                                    const std::vector<float>& positions,
+                                    DataArrayType type)
+{
+    const size_t tupleCount = positions.size() / 3u;
+    if (tupleCount == 0 || positions.size() != tupleCount * 3u) {
+        return;
+    }
+
+    AnalyticBenchmarkFrame frame;
+    if (!buildAnalyticBenchmarkFrame(positions, frame)) {
+        return;
+    }
+
+    const double cx = frame.center[0];
+    const double cy = frame.center[1];
+    const double cz = frame.center[2];
+    const double L = frame.refLength;
+    constexpr double kPi = 3.14159265358979323846;
+
+    std::vector<float> linear(tupleCount * 3u, 0.0f);
+    std::vector<float> linearGrad(tupleCount * 9u, 0.0f);
+    std::vector<float> poly(tupleCount * 3u, 0.0f);
+    std::vector<float> polyGrad(tupleCount * 9u, 0.0f);
+    std::vector<float> trig(tupleCount * 3u, 0.0f);
+    std::vector<float> trigGrad(tupleCount * 9u, 0.0f);
+
+    for (size_t i = 0; i < tupleCount; ++i) {
+        const double x = static_cast<double>(positions[i * 3u + 0]);
+        const double y = static_cast<double>(positions[i * 3u + 1]);
+        const double z = static_cast<double>(positions[i * 3u + 2]);
+        const double xr = x - cx;
+        const double yr = y - cy;
+        const double zr = z - cz;
+        const double sx = kPi * xr / L;
+        const double sy = kPi * yr / L;
+        const double sz = kPi * zr / L;
+
+        const size_t base = i * 3u;
+        const size_t gbase = i * 9u;
+
+        linear[base + 0] = static_cast<float>(0.8 * xr - 0.3 * yr + 0.2 * zr);
+        linear[base + 1] = static_cast<float>(-0.4 * xr + 1.1 * yr + 0.5 * zr);
+        linear[base + 2] = static_cast<float>(0.3 * xr + 0.6 * yr - 0.9 * zr);
+        linearGrad[gbase + 0] = 0.8f;  linearGrad[gbase + 1] = -0.3f; linearGrad[gbase + 2] = 0.2f;
+        linearGrad[gbase + 3] = -0.4f; linearGrad[gbase + 4] = 1.1f;  linearGrad[gbase + 5] = 0.5f;
+        linearGrad[gbase + 6] = 0.3f;  linearGrad[gbase + 7] = 0.6f;  linearGrad[gbase + 8] = -0.9f;
+
+        poly[base + 0] = static_cast<float>((xr * xr + 0.25 * xr * yr - 0.15 * yr * zr) / L);
+        poly[base + 1] = static_cast<float>((0.5 * yr * yr - 0.2 * xr * zr + 0.1 * xr * yr) / L);
+        poly[base + 2] = static_cast<float>((0.75 * zr * zr + 0.3 * xr * zr - 0.25 * yr * zr) / L);
+        polyGrad[gbase + 0] = static_cast<float>((2.0 * xr + 0.25 * yr) / L);
+        polyGrad[gbase + 1] = static_cast<float>((0.25 * xr - 0.15 * zr) / L);
+        polyGrad[gbase + 2] = static_cast<float>((-0.15 * yr) / L);
+        polyGrad[gbase + 3] = static_cast<float>((-0.2 * zr + 0.1 * yr) / L);
+        polyGrad[gbase + 4] = static_cast<float>((yr + 0.1 * xr) / L);
+        polyGrad[gbase + 5] = static_cast<float>((-0.2 * xr) / L);
+        polyGrad[gbase + 6] = static_cast<float>((0.3 * zr) / L);
+        polyGrad[gbase + 7] = static_cast<float>((-0.25 * zr) / L);
+        polyGrad[gbase + 8] = static_cast<float>((1.5 * zr + 0.3 * xr - 0.25 * yr) / L);
+
+        trig[base + 0] = static_cast<float>(L * (std::sin(sx) + 0.2 * std::cos(sy)));
+        trig[base + 1] = static_cast<float>(L * (0.5 * std::cos(sy) - 0.25 * std::sin(sz)));
+        trig[base + 2] = static_cast<float>(L * (0.3 * std::sin(sz) + 0.15 * std::cos(sx)));
+        trigGrad[gbase + 0] = static_cast<float>(kPi * std::cos(sx));
+        trigGrad[gbase + 1] = static_cast<float>(-0.2 * kPi * std::sin(sy));
+        trigGrad[gbase + 2] = 0.0f;
+        trigGrad[gbase + 3] = 0.0f;
+        trigGrad[gbase + 4] = static_cast<float>(-0.5 * kPi * std::sin(sy));
+        trigGrad[gbase + 5] = static_cast<float>(-0.25 * kPi * std::cos(sz));
+        trigGrad[gbase + 6] = static_cast<float>(-0.15 * kPi * std::sin(sx));
+        trigGrad[gbase + 7] = 0.0f;
+        trigGrad[gbase + 8] = static_cast<float>(0.3 * kPi * std::cos(sz));
+    }
+
+    data.upsertDataArray("benchmark_vec_linear", linear, 3, type);
+    data.upsertDataArray("benchmark_vec_linear_exact_grad", linearGrad, 9, type);
+    data.upsertDataArray("benchmark_vec_poly", poly, 3, type);
+    data.upsertDataArray("benchmark_vec_poly_exact_grad", polyGrad, 9, type);
+    data.upsertDataArray("benchmark_vec_trig", trig, 3, type);
+    data.upsertDataArray("benchmark_vec_trig_exact_grad", trigGrad, 9, type);
 }
 
 void appendAnalyticBenchmarkArrays(DataObject& data)
 {
     appendAnalyticScalarBenchmarks(data, data.points, POINT_DATA);
     appendAnalyticScalarBenchmarks(data, data.cellCenters, CELL_DATA);
+    appendAnalyticVectorBenchmarks(data, data.points, POINT_DATA);
+    appendAnalyticVectorBenchmarks(data, data.cellCenters, CELL_DATA);
 }
 }
 
@@ -1572,6 +1804,9 @@ bool CAEProcessingFacade::ensureAdaptiveSupport(DatasetRecord& rec,
     if (!buildAdaptiveGradientSupport(positions, offsets, neighbors, cfg, built)) {
         return false;
     }
+    if (!validateAdaptiveSupportData(built, positions.size() / 3u)) {
+        return false;
+    }
 
     support.ready = true;
     support.minNeighbors = cfg.minNeighbors;
@@ -1599,6 +1834,7 @@ bool CAEProcessingFacade::computeByAdaptiveWLS(DatasetRecord& rec,
         !gradientAssociationMatchesArray(src, req.association)) {
         return false;
     }
+
     if (!ensureAdaptiveSupport(rec, req.association, req)) {
         return false;
     }
@@ -1617,6 +1853,10 @@ bool CAEProcessingFacade::computeByAdaptiveWLS(DatasetRecord& rec,
     wp.enableAdaptiveDimension = req.useAdaptiveDimension ? 1 : 0;
     wp.enableAdaptiveRegularization = req.useAdaptiveRegularization ? 1 : 0;
 
+    if (!validateNeighborGraph(support.offsets, support.neighbors, positions.size() / 3u)) {
+        return false;
+    }
+
     bool ok = m_engine.computeUnstructuredAdaptiveWLS(
         positions,
         support.offsets,
@@ -1628,18 +1868,21 @@ bool CAEProcessingFacade::computeByAdaptiveWLS(DatasetRecord& rec,
         support.meanNeighborDistance,
         wp,
         outGrad);
-    if (ok) {
-        m_lastComputeGpuMs = m_engine.getLastGpuTimeMs();
-        return true;
+
+    // Keep a pure OpenGL fallback path for drivers that reject the adaptive
+    // shader or for supports that still end up numerically awkward. The
+    // fallback reuses the same entity-centered stencil and solves the global
+    // 3D weighted least-squares system without frame-based dimension reduction.
+    if (!ok) {
+        ok = m_engine.computeUnstructuredWLS(
+            positions,
+            support.offsets,
+            support.neighbors,
+            src.data,
+            wp,
+            outGrad);
     }
 
-    ok = m_engine.computeUnstructuredWLS(
-        positions,
-        support.offsets,
-        support.neighbors,
-        src.data,
-        wp,
-        outGrad);
     if (ok) {
         m_lastComputeGpuMs = m_engine.getLastGpuTimeMs();
     }

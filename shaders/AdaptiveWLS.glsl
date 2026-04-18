@@ -89,47 +89,52 @@ vec3 getAxis(int i, int axis)
     return vec3(frame[base + 0], frame[base + 1], frame[base + 2]);
 }
 
-float computeWeight(vec3 local, float len, float h, float alpha, uint dim)
+vec3 safeNormalize(vec3 v, vec3 fallbackAxis)
 {
-    float sigma = max(h, 1e-6);
-    float sigma2 = sigma * sigma;
-    float spatial = exp(-0.5 * len * len / sigma2);
-    float tangentPenalty = 1.0;
+    float n = length(v);
+    if (n <= 1e-7) {
+        return fallbackAxis;
+    }
+    return v / n;
+}
 
-    if (dim == 2u) {
-        float ns = max(0.35 * sigma, 1e-6);
-        tangentPenalty = exp(-0.5 * local.z * local.z / (ns * ns));
-    } else if (dim == 1u) {
-        float ns = max(0.35 * sigma, 1e-6);
-        float ortho2 = local.y * local.y + local.z * local.z;
-        tangentPenalty = exp(-0.5 * ortho2 / (ns * ns));
+float computeDistanceWeight(float len)
+{
+    return 1.0 / pow(max(len, 1e-6), max(uWExp, 0.0));
+}
+
+float computeLambdaEff(float traceValue, float h, float quality, int count)
+{
+    float lambdaScale = 1.0;
+    if (uEnableAdaptiveRegularization != 0) {
+        lambdaScale += uLambdaAmplify * (1.0 - clamp(quality, 0.0, 1.0));
     }
 
-    return spatial * tangentPenalty / pow(max(len, 1e-6), alpha);
+    float h2 = max(h * h, 1e-8);
+    float scaledTrace = traceValue > 0.0 ? (traceValue / max(float(count), 1.0)) : h2;
+    float base = max(uLambda * lambdaScale * max(scaledTrace, h2), 1e-8);
+    return max(base, max(1e-6 * max(traceValue, 0.0), 1e-8));
 }
 
 void main()
 {
     uint iu = gl_GlobalInvocationID.x;
-    if (int(iu) >= uN) return;
+    if (int(iu) >= uN) {
+        return;
+    }
 
     int i = int(iu);
     int b = off[i];
     int e = off[i + 1];
     vec3 pi = pos[i].xyz;
 
-    vec3 e1 = normalize(getAxis(i, 0));
-    vec3 e2 = normalize(getAxis(i, 1));
-    vec3 e3 = normalize(getAxis(i, 2));
+    vec3 e1 = safeNormalize(getAxis(i, 0), vec3(1.0, 0.0, 0.0));
+    vec3 e2 = safeNormalize(getAxis(i, 1), vec3(0.0, 1.0, 0.0));
+    vec3 e3 = safeNormalize(getAxis(i, 2), vec3(0.0, 0.0, 1.0));
 
     uint dim = (uEnableAdaptiveDimension != 0) ? clamp(dimTag[i], 1u, 3u) : 3u;
     float q = clamp(qual[i], 0.0, 1.0);
     float h = max(meanDist[i], 1e-6);
-    float alpha = uWExp + 0.75 * (1.0 - q);
-    float lambdaScale = 1.0;
-    if (uEnableAdaptiveRegularization != 0) {
-        lambdaScale = 1.0 + uLambdaAmplify * (1.0 - q);
-    }
 
     int n = uNumComponents;
     int base = i * (3 * n);
@@ -142,7 +147,7 @@ void main()
 
         if (dim == 1u)
         {
-            float s11 = 0.0;
+            float a11 = 0.0;
             float rhs = 0.0;
 
             for (int k = b; k < e; ++k)
@@ -151,23 +156,21 @@ void main()
                 if (j < 0 || j >= uN) continue;
 
                 vec3 d = pos[j].xyz - pi;
-                float x = dot(d, e1);
-                float y = dot(d, e2);
-                float z = dot(d, e3);
-                float len = length(vec3(x, y, z));
+                float len = length(d);
                 if (len <= 1e-6) continue;
 
+                float x = dot(d, e1);
                 float dv = getv(j, c) - f0;
-                float w = computeWeight(vec3(x, y, z), len, h, alpha, dim);
+                float w = computeDistanceWeight(len);
 
-                s11 += w * x * x;
+                a11 += w * x * x;
                 rhs += w * dv * x;
                 cnt++;
             }
 
-            float lambdaEff = max(uLambda * lambdaScale, 1e-8);
-            if (cnt >= 2 && s11 > 1e-10) {
-                g = (rhs / (s11 + lambdaEff)) * e1;
+            float lambdaEff = computeLambdaEff(a11, h, q, cnt);
+            if (cnt >= 2 && a11 > 1e-10) {
+                g = (rhs / (a11 + lambdaEff)) * e1;
             }
         }
         else if (dim == 2u)
@@ -181,23 +184,23 @@ void main()
                 if (j < 0 || j >= uN) continue;
 
                 vec3 d = pos[j].xyz - pi;
-                vec3 local = vec3(dot(d, e1), dot(d, e2), dot(d, e3));
-                float len = length(local);
+                float len = length(d);
                 if (len <= 1e-6) continue;
 
+                vec2 local = vec2(dot(d, e1), dot(d, e2));
                 float dv = getv(j, c) - f0;
-                float w = computeWeight(local, len, h, alpha, dim);
+                float w = computeDistanceWeight(len);
 
                 A[0][0] += w * local.x * local.x;
                 A[0][1] += w * local.x * local.y;
                 A[1][0] += w * local.y * local.x;
                 A[1][1] += w * local.y * local.y;
-                rhs += w * dv * local.xy;
+                rhs += w * dv * local;
                 cnt++;
             }
 
-            float tr = A[0][0] + A[1][1];
-            float lambdaEff = max(uLambda * lambdaScale, max(1e-6 * tr, 1e-8));
+            float traceValue = A[0][0] + A[1][1];
+            float lambdaEff = computeLambdaEff(traceValue, h, q, cnt);
             A[0][0] += lambdaEff;
             A[1][1] += lambdaEff;
 
@@ -209,7 +212,7 @@ void main()
         }
         else
         {
-            mat3 S = mat3(0.0);
+            mat3 A = mat3(0.0);
             vec3 rhs = vec3(0.0);
 
             for (int k = b; k < e; ++k)
@@ -218,32 +221,32 @@ void main()
                 if (j < 0 || j >= uN) continue;
 
                 vec3 d = pos[j].xyz - pi;
-                vec3 local = vec3(dot(d, e1), dot(d, e2), dot(d, e3));
-                float len = length(local);
+                float len = length(d);
                 if (len <= 1e-6) continue;
 
+                vec3 local = vec3(dot(d, e1), dot(d, e2), dot(d, e3));
                 float dv = getv(j, c) - f0;
-                float w = computeWeight(local, len, h, alpha, dim);
+                float w = computeDistanceWeight(len);
 
-                S[0][0] += w * local.x * local.x;
-                S[0][1] += w * local.x * local.y;
-                S[0][2] += w * local.x * local.z;
-                S[1][0] += w * local.y * local.x;
-                S[1][1] += w * local.y * local.y;
-                S[1][2] += w * local.y * local.z;
-                S[2][0] += w * local.z * local.x;
-                S[2][1] += w * local.z * local.y;
-                S[2][2] += w * local.z * local.z;
+                A[0][0] += w * local.x * local.x;
+                A[0][1] += w * local.x * local.y;
+                A[0][2] += w * local.x * local.z;
+                A[1][0] += w * local.y * local.x;
+                A[1][1] += w * local.y * local.y;
+                A[1][2] += w * local.y * local.z;
+                A[2][0] += w * local.z * local.x;
+                A[2][1] += w * local.z * local.y;
+                A[2][2] += w * local.z * local.z;
                 rhs += w * dv * local;
                 cnt++;
             }
 
-            float tr = S[0][0] + S[1][1] + S[2][2];
-            float lambdaEff = max(uLambda * lambdaScale, max(1e-6 * tr, 1e-8));
-            S += lambdaEff * mat3(1.0);
+            float traceValue = A[0][0] + A[1][1] + A[2][2];
+            float lambdaEff = computeLambdaEff(traceValue, h, q, cnt);
+            A += lambdaEff * mat3(1.0);
 
             mat3 L;
-            bool ok = (cnt >= 4) && chol3(S, L);
+            bool ok = (cnt >= 4) && chol3(A, L);
             if (ok) {
                 vec3 y = fwd3(L, rhs);
                 vec3 coeff = bwd3(L, y);
