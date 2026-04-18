@@ -1693,6 +1693,28 @@ bool CAEProcessingFacade::getArrayData(const std::string& datasetId, const std::
     return true;
 }
 
+bool CAEProcessingFacade::upsertArrayData(const std::string& datasetId,
+                                          const std::string& arrayName,
+                                          CAEFieldAssociation assoc,
+                                          const std::vector<float>& data,
+                                          int numComponents)
+{
+    auto it = m_records.find(datasetId);
+    if (it == m_records.end()) {
+        return false;
+    }
+
+    const DataArrayType type = toDataArrayType(assoc);
+    const size_t tupleCount = assoc == CAEFieldAssociation::Point
+        ? it->second->data.pointCount()
+        : it->second->data.cellCount();
+    if (numComponents <= 0 || data.size() != tupleCount * static_cast<size_t>(numComponents)) {
+        return false;
+    }
+
+    return it->second->data.upsertDataArray(arrayName, data, numComponents, type);
+}
+
 double CAEProcessingFacade::getLastComputeWallMs() const
 {
     return m_lastComputeWallMs;

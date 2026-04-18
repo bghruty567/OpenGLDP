@@ -62,6 +62,11 @@ public:
 	* @brief 获取指定数据集和字段的原始数据数组，用于外部分析或验证等目的
     */
     bool getArrayData(const std::string& datasetId, const std::string& arrayName, CAEFieldAssociation assoc, std::vector<float>& outData, int& outComps) const;
+    bool upsertArrayData(const std::string& datasetId,
+                         const std::string& arrayName,
+                         CAEFieldAssociation assoc,
+                         const std::vector<float>& data,
+                         int numComponents);
     /*
 	* @brief 获取上一次梯度计算的CPU时间和GPU时间，单位为毫秒，用于性能分析和比较不同方法的效率等目的
     */
