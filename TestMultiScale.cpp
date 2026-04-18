@@ -312,7 +312,7 @@ int main(int argc, char** argv)
     }
 
     if (!exportPath.empty()) {
-        if (facade.saveDatasetToVTKFile(dsId, exportPath, false)) {
+        if (facade.saveDatasetToVTKFile(dsId, exportPath, true)) {
             std::cout << "Exported=" << exportPath << "\n";
         } else {
             std::cout << "Export failed: " << exportPath << "\n";

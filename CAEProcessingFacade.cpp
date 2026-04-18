@@ -1647,6 +1647,9 @@ bool CAEProcessingFacade::saveDatasetToVTKFile(const std::string& datasetId, con
     vtkNew<vtkDataSetWriter> writer;
     writer->SetFileName(filePath.c_str());
     writer->SetInputData(outVtk);
+    // Write the classic legacy layout so older ParaView / vtkDataReader
+    // can parse cell connectivity without the 5.1 OFFSETS/CONNECTIVITY form.
+    writer->SetFileVersion(vtkDataWriter::VTK_LEGACY_READER_VERSION_4_2);
     if (binary) {
         writer->SetFileTypeToBinary();
     }

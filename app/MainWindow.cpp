@@ -294,8 +294,10 @@ void MainWindow::exportCurrentDataset()
         return;
     }
 
+    // Export in binary: some datasets contain NaN values and ASCII legacy VTK
+    // may serialize them as "-nan(ind)", which older ParaView readers reject.
     const bool ok = m_facade.saveDatasetToVTKFile(
-        toStdString(dsId), toStdString(outPath), false);
+        toStdString(dsId), toStdString(outPath), true);
 
     if (!ok) {
         QMessageBox::warning(this, "Export Failed", "Failed to export the current dataset.");
