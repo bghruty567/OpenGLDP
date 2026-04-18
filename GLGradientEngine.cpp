@@ -135,21 +135,9 @@ bool GLGradientEngine::init()
         progAdaptiveWLS = buildComputeFromFile(shaderDir + "\\AdaptiveWLS.glsl");
     }
 
-    if (progSparseReconstruct == 0)
-    {
-        progSparseReconstruct = buildComputeFromFile(shaderDir + "\\SparseReconstruct.glsl");
-    }
-
-    if (progSparseGradient == 0)
-    {
-        progSparseGradient = buildComputeFromFile(shaderDir + "\\SparseGradient.glsl");
-    }
-
     return progRegular != 0 &&
            progWLS != 0 &&
-           progAdaptiveWLS != 0 &&
-           progSparseReconstruct != 0 &&
-           progSparseGradient != 0;
+           progAdaptiveWLS != 0;
 }
 
 void GLGradientEngine::release()
@@ -169,17 +157,6 @@ void GLGradientEngine::release()
         glDeleteProgram(progAdaptiveWLS);
         progAdaptiveWLS = 0;
     }
-    if (progSparseReconstruct)
-    {
-        glDeleteProgram(progSparseReconstruct);
-        progSparseReconstruct = 0;
-    }
-    if (progSparseGradient)
-    {
-        glDeleteProgram(progSparseGradient);
-        progSparseGradient = 0;
-    }
-
     if (ssbo0) { glDeleteBuffers(1, &ssbo0); ssbo0 = 0; }
     if (ssbo1) { glDeleteBuffers(1, &ssbo1); ssbo1 = 0; }
     if (ssbo2) { glDeleteBuffers(1, &ssbo2); ssbo2 = 0; }
@@ -455,158 +432,6 @@ bool GLGradientEngine::computeUnstructuredAdaptiveWLS(const std::vector<float>& 
         GLuint64 ns = 0;
         glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
         lastGpuTimeMs = static_cast<double>(ns) / 1e6;
-    }
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo4);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());
-    return true;
-}
-
-bool GLGradientEngine::reconstructSparseValues(const std::vector<int>& offsets,
-                                               const std::vector<int>& sourceIndices,
-                                               const std::vector<float>& weights,
-                                               int sourceTupleCount,
-                                               const std::vector<float>& sourceValues,
-                                               std::vector<float>& outValues)
-{
-    if (progSparseReconstruct == 0 || sourceTupleCount <= 0) {
-        return false;
-    }
-
-    const size_t targetCount = offsets.empty() ? 0 : (offsets.size() - 1);
-    if (targetCount == 0 ||
-        offsets.back() < 0 ||
-        static_cast<size_t>(offsets.back()) > sourceIndices.size() ||
-        sourceIndices.size() != weights.size() ||
-        sourceValues.empty() ||
-        (sourceValues.size() % static_cast<size_t>(sourceTupleCount)) != 0) {
-        return false;
-    }
-
-    const int comps = static_cast<int>(sourceValues.size() / static_cast<size_t>(sourceTupleCount));
-    outValues.assign(targetCount * static_cast<size_t>(comps), 0.0f);
-
-    ensureBuffer(ssbo0, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, offsets.size() * sizeof(int), offsets.data());
-
-    ensureBuffer(ssbo1, sourceIndices.size() * sizeof(int), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo1);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sourceIndices.size() * sizeof(int), sourceIndices.data());
-
-    ensureBuffer(ssbo2, weights.size() * sizeof(float), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, weights.size() * sizeof(float), weights.data());
-
-    ensureBuffer(ssbo3, sourceValues.size() * sizeof(float), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sourceValues.size() * sizeof(float), sourceValues.data());
-
-    ensureBuffer(ssbo4, outValues.size() * sizeof(float), GL_DYNAMIC_DRAW);
-
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo0);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo1);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo2);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo3);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssbo4);
-
-    glUseProgram(progSparseReconstruct);
-    glUniform1i(glGetUniformLocation(progSparseReconstruct, "uTargetCount"), static_cast<int>(targetCount));
-    glUniform1i(glGetUniformLocation(progSparseReconstruct, "uSourceCount"), sourceTupleCount);
-    glUniform1i(glGetUniformLocation(progSparseReconstruct, "uNumComponents"), comps);
-
-    const GLuint gx = static_cast<GLuint>((targetCount + 255u) / 256u);
-    if (enableGpuTiming) {
-        if (timeQuery == 0) glGenQueries(1, &timeQuery);
-        glBeginQuery(GL_TIME_ELAPSED, timeQuery);
-    }
-
-    glDispatchCompute(gx, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    if (enableGpuTiming) {
-        glEndQuery(GL_TIME_ELAPSED);
-        GLuint64 ns = 0;
-        glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
-        lastGpuTimeMs = static_cast<double>(ns) / 1e6;
-    } else {
-        lastGpuTimeMs = 0.0;
-    }
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo4);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outValues.size() * sizeof(float), outValues.data());
-    return true;
-}
-
-bool GLGradientEngine::applySparseGradientOperator(const std::vector<int>& offsets,
-                                                   const std::vector<int>& sourceIndices,
-                                                   const std::vector<float>& coeffs4,
-                                                   int sourceTupleCount,
-                                                   const std::vector<float>& sourceValues,
-                                                   std::vector<float>& outGrad)
-{
-    if (progSparseGradient == 0 || sourceTupleCount <= 0) {
-        return false;
-    }
-
-    const size_t targetCount = offsets.empty() ? 0 : (offsets.size() - 1);
-    if (targetCount == 0 ||
-        offsets.back() < 0 ||
-        static_cast<size_t>(offsets.back()) > sourceIndices.size() ||
-        coeffs4.size() != sourceIndices.size() * 4u ||
-        sourceValues.empty() ||
-        (sourceValues.size() % static_cast<size_t>(sourceTupleCount)) != 0) {
-        return false;
-    }
-
-    const int comps = static_cast<int>(sourceValues.size() / static_cast<size_t>(sourceTupleCount));
-    outGrad.assign(targetCount * static_cast<size_t>(3 * comps), 0.0f);
-
-    ensureBuffer(ssbo0, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, offsets.size() * sizeof(int), offsets.data());
-
-    ensureBuffer(ssbo1, sourceIndices.size() * sizeof(int), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo1);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sourceIndices.size() * sizeof(int), sourceIndices.data());
-
-    ensureBuffer(ssbo2, coeffs4.size() * sizeof(float), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, coeffs4.size() * sizeof(float), coeffs4.data());
-
-    ensureBuffer(ssbo3, sourceValues.size() * sizeof(float), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sourceValues.size() * sizeof(float), sourceValues.data());
-
-    ensureBuffer(ssbo4, outGrad.size() * sizeof(float), GL_DYNAMIC_DRAW);
-
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo0);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo1);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo2);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo3);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssbo4);
-
-    glUseProgram(progSparseGradient);
-    glUniform1i(glGetUniformLocation(progSparseGradient, "uTargetCount"), static_cast<int>(targetCount));
-    glUniform1i(glGetUniformLocation(progSparseGradient, "uSourceCount"), sourceTupleCount);
-    glUniform1i(glGetUniformLocation(progSparseGradient, "uNumComponents"), comps);
-
-    const GLuint gx = static_cast<GLuint>((targetCount + 255u) / 256u);
-    if (enableGpuTiming) {
-        if (timeQuery == 0) glGenQueries(1, &timeQuery);
-        glBeginQuery(GL_TIME_ELAPSED, timeQuery);
-    }
-
-    glDispatchCompute(gx, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    if (enableGpuTiming) {
-        glEndQuery(GL_TIME_ELAPSED);
-        GLuint64 ns = 0;
-        glGetQueryObjectui64v(timeQuery, GL_QUERY_RESULT, &ns);
-        lastGpuTimeMs = static_cast<double>(ns) / 1e6;
-    } else {
-        lastGpuTimeMs = 0.0;
     }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo4);

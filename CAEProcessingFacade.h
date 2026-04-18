@@ -98,17 +98,6 @@ private:
         std::vector<CAEGradientResultMeta> results;
         AdaptiveGradientSupport pointSupport;
         AdaptiveGradientSupport cellSupport;
-        bool lsqOperatorCacheBuilt = false;
-        bool lsqOperatorCacheSupported = false;
-        std::vector<int> lsqPointGradOffsets;
-        std::vector<int> lsqPointGradSources;
-        std::vector<float> lsqPointGradCoeffs4;
-        std::vector<int> lsqPointValueOffsets;
-        std::vector<int> lsqPointValueSources;
-        std::vector<float> lsqPointValueWeights;
-        std::vector<int> lsqCellGradOffsets;
-        std::vector<int> lsqCellGradSources;
-        std::vector<float> lsqCellGradCoeffs4;
     };
 
 	OpenGLManager m_gl;
@@ -145,9 +134,6 @@ private:
     static std::string makeResultName(const std::string& src, CAEFieldAssociation assoc, CAEGradientMethod method);
 
     bool computeByFD(DatasetRecord& rec, const DataArray& src, std::vector<float>& outGrad) ;
-    bool computeByWLS(DatasetRecord& rec, const DataArray& src, CAEFieldAssociation assoc, float exp, float lambda, std::vector<float>& outGrad) ;
     bool computeByAdaptiveWLS(DatasetRecord& rec, const DataArray& src, const CAEGradientRequest& req, std::vector<float>& outGrad);
     bool ensureAdaptiveSupport(DatasetRecord& rec, CAEFieldAssociation assoc, const CAEGradientRequest& req);
-    bool ensureLeastSquaresOperatorCache(DatasetRecord& rec);
-    bool tryComputeByLeastSquaresOperators(DatasetRecord& rec, const DataArray& src, CAEFieldAssociation assoc, std::vector<float>& outGrad);
 };

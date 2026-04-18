@@ -17,8 +17,7 @@ enum class CAEGridClass {
 enum class CAEGradientMethod {
     Auto = 0,
     FiniteDifference = 1,
-    WeightedLeastSquares = 2,
-    AdaptiveWeightedLeastSquares = 3
+    AdaptiveWeightedLeastSquares = 2
 };
 
 

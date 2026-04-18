@@ -35,13 +35,15 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 
 int main(int argc, char** argv)
 {
-    std::string path = "Data\\hexa.vtk";
+    std::string path = "Data\\AngularSector.vtk";
     if (argc >= 2) path = argv[1];
 
     {
-        std::string assocArg = "point";
+        std::string assocArg = "cell";
         std::string arrayName;
         int reps = 5;
+        // Benchmark-only switch: analytic reference arrays are injected only
+        // for this test executable and are not exposed in the GUI workflow.
         bool enableAnalyticBenchmarks = false;
         if (argc >= 3) assocArg = argv[2];
         if (argc >= 4) arrayName = argv[3];

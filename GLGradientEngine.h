@@ -71,18 +71,6 @@ public:
                                         const std::vector<float>& meanNeighborDistance,
                                         const WLSParams& p,
                                         std::vector<float>& outGrad);
-    bool reconstructSparseValues(const std::vector<int>& offsets,
-                                 const std::vector<int>& sourceIndices,
-                                 const std::vector<float>& weights,
-                                 int sourceTupleCount,
-                                 const std::vector<float>& sourceValues,
-                                 std::vector<float>& outValues);
-    bool applySparseGradientOperator(const std::vector<int>& offsets,
-                                     const std::vector<int>& sourceIndices,
-                                     const std::vector<float>& coeffs4,
-                                     int sourceTupleCount,
-                                     const std::vector<float>& sourceValues,
-                                     std::vector<float>& outGrad);
 
     /*
     * @brief 璁剧疆鏄惁鍚敤GPU璁℃椂锛屽惎鐢ㄥ悗computeRegularFD銆乧omputeUnstructuredWLS鍜孋omputeUnstructuredAdaptiveWLS浼氬湪GPU涓婃祴閲忔墽琛屾椂闂?
@@ -99,8 +87,6 @@ private:
     GLuint progRegular = 0;//瑙勫垯缃戞牸璁＄畻鐫€鑹插櫒绋嬪簭ID
     GLuint progWLS = 0;//闈炵粨鏋勫寲缃戞牸浼犵粺WLS璁＄畻鐫€鑹插櫒绋嬪簭ID
     GLuint progAdaptiveWLS = 0;//闈炵粨鏋勫寲缃戞牸浼樺寲WLS璁＄畻鐫€鑹插櫒绋嬪簭ID
-    GLuint progSparseReconstruct = 0;
-    GLuint progSparseGradient = 0;
     //璁＄畻杩囩▼涓娇鐢ㄧ殑SSBO瀵硅薄ID
     //FD璁＄畻锛歴sbo0瀛樺偍杈撳叆鐐逛綅缃紝ssbo1瀛樺偍杈撳叆鏁版嵁锛宻sbo2瀛樺偍杈撳嚭姊害
     //WLS璁＄畻锛歴sbo0瀛樺偍杈撳叆鐐逛綅缃紝ssbo1瀛樺偍閭诲煙鍋忕Щ锛宻sbo2瀛樺偍閭诲煙鐐圭储寮曪紝ssbo3瀛樺偍杈撳叆鏁版嵁锛宻sbo4瀛樺偍杈撳嚭姊害
