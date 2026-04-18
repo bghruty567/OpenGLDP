@@ -258,3 +258,4 @@ opengldp_multiscale_test --dataset=Data\ShipHull_0.vtk --assoc=point --run=field
 
 - 梯度测试程序说明见：[TestGradient测试说明](./TestGradient测试说明.md)
 - 如果要看系统整体使用方式，可再看：[系统使用说明](./系统使用说明.md)
+- 如果要详细理解输出指标，可看：[测试程序指标详解](./测试程序指标详解.md)

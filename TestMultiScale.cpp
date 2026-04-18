@@ -25,9 +25,14 @@ enum class RunMode
     Fields
 };
 
+// 多尺度测试程序的命令行配置。
+//
+// 这份配置同时覆盖两类实验：
+// 1. synthetic：带真值的可控实验；
+// 2. fields：真实字段的工程观察实验。
 struct Options
 {
-    std::string path = "Data\\ShipHull_0.vtk";
+    std::string path = "Data\\notch_stress.vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     RunMode runMode = RunMode::Synthetic;
     std::string arrayName;
@@ -57,56 +62,67 @@ struct Options
     int seed = 1337;
 };
 
+// 与真值对比时使用的误差统计。
+//
+// 这里只保留对多尺度优化最关键的指标：
+// MAE、RMSE、最大误差，以及归一化误差。
 struct ErrorMetrics
 {
-    bool available = false;
-    size_t sampleCount = 0;
-    size_t finiteCount = 0;
-    size_t nonFiniteCount = 0;
-    double mae = 0.0;
-    double rmse = 0.0;
-    double maxAbs = 0.0;
-    double signalRms = 0.0;
-    double nmae = 0.0;
-    double nrmse = 0.0;
+    bool available = false;         ///< 当前误差统计是否有效
+    size_t sampleCount = 0;         ///< 参与统计的标量样本数
+    size_t finiteCount = 0;         ///< 有限值样本数
+    size_t nonFiniteCount = 0;      ///< 非有限值样本数
+    double mae = 0.0;               ///< 平均绝对误差
+    double rmse = 0.0;              ///< 均方根误差
+    double maxAbs = 0.0;            ///< 最大绝对误差
+    double signalRms = 0.0;         ///< 参考干净信号的 RMS
+    double nmae = 0.0;              ///< 归一化 MAE
+    double nrmse = 0.0;             ///< 归一化 RMSE
 };
 
+// 单个多尺度案例的最终记录。
+//
+// 它不仅保存 fused 结果，还会记录：
+// - clean / input / fused 三者的统计差异；
+// - roughness 变化；
+// - 中间层数组名称；
+// - 对应的 VTK 导出文件路径。
 struct CaseRecord
 {
-    std::string dataset;
-    std::string association;
-    std::string mode;
-    std::string cleanArrayName;
-    std::string inputArrayName;
-    std::string fusedArrayName;
-    std::string baseArrayName;
-    std::vector<std::string> smoothArrayNames;
-    std::vector<std::string> detailArrayNames;
-    std::string noiseTag;
-    std::string caseLabel;
-    std::string exportedVtkPath;
-    bool exportSuccess = false;
-    int components = 0;
-    bool success = false;
-    std::string failureReason;
-    double wallAvgMs = 0.0;
-    double wallMinMs = 0.0;
-    double gpuAvgMs = 0.0;
-    double gpuMinMs = 0.0;
+    std::string dataset;            ///< 数据集显示名
+    std::string association;        ///< POINT 或 CELL
+    std::string mode;               ///< synthetic 或 fields
+    std::string cleanArrayName;     ///< synthetic 模式下的干净真值字段名
+    std::string inputArrayName;     ///< 实际输入优化模块的字段名
+    std::string fusedArrayName;     ///< 融合重建结果字段名
+    std::string baseArrayName;      ///< 最深平滑层或 base 层字段名
+    std::vector<std::string> smoothArrayNames; ///< 各层平滑结果字段名
+    std::vector<std::string> detailArrayNames; ///< 各层细节结果字段名
+    std::string noiseTag;           ///< synthetic 模式下的噪声类型标签
+    std::string caseLabel;          ///< 当前案例的统一标签
+    std::string exportedVtkPath;    ///< 导出的 VTK 路径
+    bool exportSuccess = false;     ///< 是否成功导出 VTK
+    int components = 0;             ///< 字段分量数
+    bool success = false;           ///< 案例是否成功执行
+    std::string failureReason;      ///< 失败原因
+    double wallAvgMs = 0.0;         ///< 平均墙钟时间
+    double wallMinMs = 0.0;         ///< 最小墙钟时间
+    double gpuAvgMs = 0.0;          ///< 平均 GPU 时间
+    double gpuMinMs = 0.0;          ///< 最小 GPU 时间
 
-    bool hasCleanReference = false;
-    double cleanStd = 0.0;
-    double inputStd = 0.0;
-    double fusedStd = 0.0;
-    double cleanRoughness = 0.0;
-    double inputRoughness = 0.0;
-    double fusedRoughness = 0.0;
-    double inputToFusedMeanAbsDelta = 0.0;
-    ErrorMetrics inputError;
-    ErrorMetrics fusedError;
-    double maeImprovementRatio = 0.0;
-    double rmseImprovementRatio = 0.0;
-    double roughnessRatio = 0.0;
+    bool hasCleanReference = false; ///< 是否存在干净真值可供误差比较
+    double cleanStd = 0.0;          ///< 干净场标准差
+    double inputStd = 0.0;          ///< 输入场标准差
+    double fusedStd = 0.0;          ///< 优化后场标准差
+    double cleanRoughness = 0.0;    ///< 干净场图粗糙度
+    double inputRoughness = 0.0;    ///< 输入场图粗糙度
+    double fusedRoughness = 0.0;    ///< 优化后场图粗糙度
+    double inputToFusedMeanAbsDelta = 0.0; ///< 输入与输出平均绝对改变量
+    ErrorMetrics inputError;        ///< 输入场相对真值的误差
+    ErrorMetrics fusedError;        ///< 优化后场相对真值的误差
+    double maeImprovementRatio = 0.0; ///< `fused_mae / input_mae`
+    double rmseImprovementRatio = 0.0; ///< `fused_rmse / input_rmse`
+    double roughnessRatio = 0.0;    ///< `fused_roughness / input_roughness`
 };
 
 const char* assocName(CAEFieldAssociation assoc)
@@ -598,6 +614,11 @@ std::filesystem::path resolveCaseExportPath(const Options& opt,
                                             size_t caseIndex,
                                             size_t totalCases)
 {
+    // 导出规则分两种：
+    // 1. 单 case 且路径明确到 .vtk：直接写该文件；
+    // 2. 多 case：自动生成“前缀 + 编号 + 案例标签”的文件名。
+    //
+    // 这样用户既可以精准导出一个案例，也可以批量生成一组供 ParaView 对比的文件。
     if (opt.exportPath.empty()) {
         return {};
     }
@@ -646,6 +667,13 @@ bool exportCaseDataset(const Options& opt,
                        CAEProcessingFacade& sourceFacade,
                        const std::string& sourceDatasetId)
 {
+    // 导出时不直接复用当前 facade 的内部对象，而是重新加载一份原始数据集，
+    // 再把当前案例关心的数组拷贝进去。
+    //
+    // 这样做的好处是：
+    // 1. 每个导出的 VTK 文件只包含本案例相关字段；
+    // 2. 不会把其他案例的中间结果一股脑混进去；
+    // 3. 便于 ParaView 中逐个案例观察。
     if (opt.exportPath.empty()) {
         return true;
     }
@@ -700,6 +728,8 @@ CAEMultiScaleRequest buildRequest(const Options& opt,
                                   const std::string& datasetId,
                                   const std::string& inputArray)
 {
+    // 把命令行参数转成门面层请求对象。
+    // 这一层相当于“测试程序”和“算法门面”之间的参数适配器。
     CAEMultiScaleRequest req;
     req.datasetId = datasetId;
     req.inputArrayName = inputArray;
@@ -727,6 +757,8 @@ bool runMultiScale(CAEProcessingFacade& facade,
                    double& gpuAvgMs,
                    double& gpuMinMs)
 {
+    // 对同一个输入字段重复执行多次，获得稳定的 wall/gpu 时间统计。
+    // 算法结果会被门面层覆盖更新，因此这里主要关注计时而不是保留每次输出。
     wallAvgMs = 0.0;
     wallMinMs = std::numeric_limits<double>::max();
     gpuAvgMs = 0.0;
@@ -757,6 +789,13 @@ CaseRecord runSyntheticCase(CAEProcessingFacade& facade,
                             NoiseKind noiseKind,
                             std::uint32_t seed)
 {
+    // synthetic 模式是数据优化模块最重要的“可控实验”入口。
+    //
+    // 流程为：
+    // clean 场 -> 加噪得到 input -> 跑多尺度优化 -> 与 clean 对比。
+    //
+    // 因为 clean 场已知，所以这里能够回答“优化后到底更接近真值了吗”，
+    // 而不只是主观地看起来更平滑。
     CaseRecord rec;
     rec.dataset = summary.displayName;
     rec.association = assocName(opt.assoc);
@@ -835,6 +874,14 @@ CaseRecord runFieldCase(CAEProcessingFacade& facade,
                         const std::vector<int>& neighbors,
                         const CAEFieldInfo& field)
 {
+    // fields 模式对应真实工程字段。
+    //
+    // 这类实验通常没有真值，所以不以“误差”作为唯一结论，
+    // 而是重点观察：
+    // 1. roughness 是否下降；
+    // 2. 标准差是否变化过大；
+    // 3. input 与 fused 的差值是否过猛；
+    // 4. ParaView 中结构是否被过度抹平。
     CaseRecord rec;
     rec.dataset = summary.displayName;
     rec.association = assocName(opt.assoc);
@@ -884,6 +931,13 @@ bool writeCsvReport(const std::string& path,
                     const Options& opt,
                     const std::vector<CaseRecord>& records)
 {
+    // 多尺度 CSV 报告强调三类信息同时保留：
+    // 1. 算法配置；
+    // 2. 优化前后统计量；
+    // 3. 若有真值，则保留误差改善比例。
+    //
+    // 这样可以把“更平滑了”与“更接近真值了”区分开看，
+    // 防止只靠肉眼把过度平滑误判为优化成功。
     std::filesystem::path outPath(path);
     if (!outPath.parent_path().empty()) {
         std::error_code ec;
@@ -1032,6 +1086,9 @@ void printCaseSummary(const CaseRecord& rec)
 
 int main(int argc, char** argv)
 {
+    // main 把多尺度实验组织成统一流程：
+    // 读数据 -> 建图 -> 选择 synthetic 或 fields 模式 ->
+    // 执行案例 -> 导出 VTK / CSV -> 输出总览统计。
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {

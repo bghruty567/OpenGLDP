@@ -22,6 +22,11 @@
 
 namespace testharness
 {
+// 这个命名空间集中放测试程序共用的辅助逻辑。
+//
+// 它主要服务于两类工作：
+// 1. 命令行和 CSV 处理；
+// 2. 几何分析、解析场构造、加噪、误差与粗糙度统计。
 inline std::string toLower(std::string value)
 {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -109,6 +114,11 @@ inline std::string csvEscape(const std::string& value)
     return escaped;
 }
 
+/// 为规则网格显式构建 6 邻域图。
+///
+/// 输出采用 CSR 风格：
+/// - `offsets[i] ~ offsets[i+1]-1` 表示第 i 个样本的邻居范围；
+/// - `neighbors` 存实际邻居索引。
 inline bool buildRegularNeighbors(int nx, int ny, int nz, std::vector<int>& offsets, std::vector<int>& neighbors)
 {
     if (nx <= 0 || ny <= 0 || nz <= 0) {
@@ -141,6 +151,10 @@ inline bool buildRegularNeighbors(int nx, int ny, int nz, std::vector<int>& offs
     return true;
 }
 
+/// 按点/单元关联统一构建测试程序所需的邻域图。
+///
+/// 这样无论输入是规则网格还是非结构网格，后续 roughness 计算、
+/// synthetic 去噪实验等都能复用同一套图统计逻辑。
 inline bool buildAssociationGraph(const DataObject& data,
                                   CAEFieldAssociation assoc,
                                   std::vector<float>& positions,
@@ -183,6 +197,7 @@ inline bool buildAssociationGraph(const DataObject& data,
     return !positions.empty() && offsets.size() == positions.size() / 3u + 1u;
 }
 
+/// 把导出的 VTK 数据再次转换回内部 `DataObject`，供测试程序做几何分析。
 inline bool buildDataObjectFromVtk(vtkDataSet* dataset, DataObject& outData)
 {
     if (!dataset) {
@@ -193,6 +208,11 @@ inline bool buildDataObjectFromVtk(vtkDataSet* dataset, DataObject& outData)
     return conv.convertVTKToInternal() != 0;
 }
 
+/// 标准差，用于估计信号波动幅度。
+///
+/// 在多尺度测试中，它常被用来：
+/// - 设定噪声强度；
+/// - 观察优化前后波动是否下降过多。
 inline double computeStdDev(const std::vector<float>& values)
 {
     if (values.empty()) {
@@ -214,6 +234,7 @@ inline double computeStdDev(const std::vector<float>& values)
     return std::sqrt(var);
 }
 
+/// 均方根，用来刻画信号整体能量尺度。
 inline double computeSignalRms(const std::vector<float>& values)
 {
     if (values.empty()) {
@@ -228,6 +249,9 @@ inline double computeSignalRms(const std::vector<float>& values)
     return std::sqrt(sumSq / static_cast<double>(values.size()));
 }
 
+/// 两个同维字段的平均绝对差。
+///
+/// 在真实字段多尺度实验中，它可以看作“优化前后改动有多大”。
 inline double computeMeanAbsDelta(const std::vector<float>& a, const std::vector<float>& b)
 {
     if (a.size() != b.size() || a.empty()) {
@@ -241,6 +265,10 @@ inline double computeMeanAbsDelta(const std::vector<float>& a, const std::vector
     return sum / static_cast<double>(a.size());
 }
 
+/// 图粗糙度指标。
+///
+/// 计算方式是：对图上每条邻接边，统计两端数值差的绝对值，再取平均。
+/// 该值越大，说明字段在邻域间起伏越剧烈；越小，说明越平滑。
 inline double computeGraphRoughness(const std::vector<float>& values,
                                     int comps,
                                     const std::vector<int>& offsets,
@@ -279,6 +307,11 @@ inline double computeGraphRoughness(const std::vector<float>& values,
     return cnt > 0 ? (sum / static_cast<double>(cnt)) : 0.0;
 }
 
+/// 坐标包围盒与尺度信息。
+///
+/// 主要用于：
+/// 1. 构造解析 benchmark 的归一化坐标系；
+/// 2. 给几何分析提供整体尺度参考。
 struct BoundsInfo
 {
     bool valid = false;
@@ -320,6 +353,10 @@ inline BoundsInfo computeBounds(const std::vector<float>& positions)
     return out;
 }
 
+/// 解析 benchmark 的参考坐标框架。
+///
+/// 这里不直接依赖某个具体数据集的物理量纲，而是利用几何中心和最大尺度
+/// 把不同模型统一映射到可比的解析场表达上。
 struct AnalyticBenchmarkFrame
 {
     std::array<double, 3> center{ 0.0, 0.0, 0.0 };
@@ -337,6 +374,7 @@ inline bool buildAnalyticBenchmarkFrame(const std::vector<float>& positions, Ana
     return true;
 }
 
+// 下面这一组是几何分析的基础线性代数工具。
 constexpr double kGeomEps = 1e-12;
 
 inline std::array<double, 3> loadPosition(const std::vector<float>& positions, size_t index)
@@ -455,6 +493,9 @@ struct EigenFrameInfo
     std::array<double, 3> eigenValues{ 1.0, 1.0, 1.0 };
 };
 
+/// 根据协方差矩阵估计主方向框架与特征值。
+///
+/// 测试程序用它来判断局部几何更像 1D / 2D / 3D 结构。
 inline void eigenSymmetric3(const double cov[3][3], EigenFrameInfo& out)
 {
     double a[3][3] = {
@@ -500,6 +541,7 @@ inline void eigenSymmetric3(const double cov[3][3], EigenFrameInfo& out)
     }
 }
 
+/// 根据 VTK 单元类型粗略推断拓扑维度。
 inline int vtkCellDimension(int cellType)
 {
     switch (cellType) {
@@ -535,6 +577,7 @@ inline int vtkCellDimension(int cellType)
     }
 }
 
+/// 从内部数据对象中估计整个数据集的拓扑维度。
 inline int inferTopologicalDimension(const DataObject& data)
 {
     if (data.gridType == DATA_OBJECT_TYPE_RegularGrid) {
@@ -550,6 +593,10 @@ inline int inferTopologicalDimension(const DataObject& data)
     return maxDim;
 }
 
+/// 测试程序使用的几何分析结果。
+///
+/// 它把“这个数据集局部更像线、面还是体”这件事显式量化出来，
+/// 这样后续可以把误差和几何类型联系起来分析。
 struct GeometryAnalysis
 {
     bool available = false;
@@ -566,6 +613,12 @@ struct GeometryAnalysis
     std::array<double, 3> globalEigenRatios{ 1.0, 1.0, 1.0 };
 };
 
+/// 依据特征值比例判断局部几何维度。
+///
+/// 返回值含义：
+/// - 1：更像线结构；
+/// - 2：更像面结构；
+/// - 3：更像体结构。
 inline int inferGeometricDimensionFromEigenvalues(const std::array<double, 3>& values,
                                                   double planeEigenRatio = 0.06,
                                                   double lineEigenRatio = 0.02)
@@ -584,6 +637,13 @@ inline int inferGeometricDimensionFromEigenvalues(const std::array<double, 3>& v
     return 3;
 }
 
+/// 对当前点/单元样本做整体与局部几何分析。
+///
+/// 这是 TestGradient 中很多“问题解释指标”的来源，例如：
+/// - `surfaceLike`
+/// - 局部维度标签分布
+/// - 局部主方向框架
+/// - 平均邻距
 inline GeometryAnalysis analyzeGeometry(const DataObject& data,
                                         CAEFieldAssociation assoc,
                                         double planeEigenRatio = 0.06,
@@ -690,6 +750,10 @@ inline GeometryAnalysis analyzeGeometry(const DataObject& data,
     return out;
 }
 
+/// 将梯度向量投影到局部 intrinsic 子空间。
+///
+/// 它用于曲面型数据的附加评价，目的是把“法向分量口径不一致”与
+/// “切向梯度本身重建得不好”区分开。
 inline std::vector<float> projectGradientToIntrinsic(const std::vector<float>& values,
                                                      int comps,
                                                      const GeometryAnalysis& geometry)
@@ -753,6 +817,7 @@ inline std::vector<float> projectGradientToIntrinsic(const std::vector<float>& v
     return projected;
 }
 
+/// synthetic 测试中使用的一个字段数组。
 struct NamedArray
 {
     std::string name;
@@ -760,6 +825,18 @@ struct NamedArray
     int numComponents = 1;
 };
 
+/// 生成几类具有代表性的干净解析场。
+///
+/// 当前包含：
+/// - 三角振荡场；
+/// - 高斯峰场；
+/// - 多项式混合场；
+/// - 带明显边缘的分段场。
+///
+/// 这些场分别对应不同难点，适合观察多尺度优化是否会：
+/// - 正常去噪；
+/// - 破坏尖峰；
+/// - 过度平滑边缘。
 inline std::vector<NamedArray> buildSyntheticScalarFields(const std::vector<float>& positions)
 {
     std::vector<NamedArray> out;
@@ -817,6 +894,7 @@ inline std::vector<NamedArray> buildSyntheticScalarFields(const std::vector<floa
     return out;
 }
 
+/// synthetic 多尺度实验中的噪声类型。
 enum class NoiseKind
 {
     Gaussian,
@@ -824,6 +902,7 @@ enum class NoiseKind
     Mixed
 };
 
+/// 把噪声类型转成稳定的字符串标签，便于 CSV 和文件命名。
 inline const char* noiseKindTag(NoiseKind kind)
 {
     switch (kind) {
@@ -836,6 +915,12 @@ inline const char* noiseKindTag(NoiseKind kind)
     }
 }
 
+/// 按给定策略向干净字段中注入噪声。
+///
+/// 参数含义：
+/// - `sigmaFactor`：高斯噪声标准差，相对于信号标准差；
+/// - `impulseRatio`：脉冲噪声出现概率；
+/// - `impulseScale`：脉冲噪声幅值，相对于信号标准差。
 inline std::vector<float> addNoise(const std::vector<float>& clean,
                                    int numComponents,
                                    NoiseKind kind,

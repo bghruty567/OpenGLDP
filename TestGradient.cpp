@@ -42,16 +42,23 @@ enum class RunMode
     Fields
 };
 
+// 命令行配置集合。
+//
+// 这个结构把一次实验需要的“数据集选择、参考来源、算法参数、输出方式”
+// 全部收拢到一起，方便：
+// 1. 命令行解析；
+// 2. 控制台打印配置；
+// 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string path = "Data\\ShipHull_0.vtk";
+    std::string path = "Data\\notch_stress.vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     std::string arrayName;
     int reps = 5;
-    bool enableAnalyticBenchmarks = true;
+    bool enableAnalyticBenchmarks = false;
     ReferenceMode referenceMode = ReferenceMode::Auto;
     int maxSamplesToPrint = 12;
-    RunMode runMode = RunMode::Fields;
+    RunMode runMode = RunMode::Single;
     bool listFields = false;
     bool listBenchmarks = false;
     bool showConfig = false;
@@ -71,92 +78,116 @@ struct Options
     float lambdaAmplify = 4.0f;
 };
 
+// 某个参考梯度来源的完整描述。
+//
+// 参考来源可能是：
+// 1. 解析真值；
+// 2. vtkGradientFilter；
+// 3. 不提供参考。
 struct ReferenceData
 {
-    bool available = false;
-    bool analytic = false;
-    std::string label;
-    std::vector<float> values;
-    int comps = 0;
-    double timeAvgMs = 0.0;
-    double timeMinMs = 0.0;
+    bool available = false;         ///< 当前参考数据是否成功取得
+    bool analytic = false;          ///< 是否来自解析真值，而不是 VTK 对照
+    std::string label;              ///< 参考来源标签，例如 analytic / vtk
+    std::vector<float> values;      ///< 参考梯度数据
+    int comps = 0;                  ///< 参考梯度每个 tuple 的分量数
+    double timeAvgMs = 0.0;         ///< 参考方法平均耗时
+    double timeMinMs = 0.0;         ///< 参考方法最小耗时
 };
 
+// 梯度对比时汇总的误差指标。
+//
+// 之所以同时保留绝对误差、归一化误差、软相对误差、方向夹角等多组指标，
+// 是因为单一指标很难完整解释非结构网格上的误差来源。
+//
+// 例如：
+// - 低梯度区域会把普通相对误差放大；
+// - 曲面数据上法向分量会影响环境梯度对比；
+// - 局部奇异点会把最大误差拉得很高。
 struct CompareMetrics
 {
-    bool haveReference = false;
-    std::string referenceLabel;
-    size_t tupleCount = 0;
-    int compareComponents = 0;
-    int vecsPerTuple = 0;
-    size_t rawVecCount = 0;
-    size_t finiteVecCount = 0;
-    size_t nonFiniteVecCount = 0;
-    size_t lowRefCount = 0;
-    double lowRefRatio = 0.0;
+    bool haveReference = false;     ///< 当前案例是否存在可比较的参考梯度
+    std::string referenceLabel;     ///< 参考来源名称
+    size_t tupleCount = 0;          ///< 实际参与比较的 tuple 数
+    int compareComponents = 0;      ///< 实际参与比较的分量数
+    int vecsPerTuple = 0;           ///< 每个 tuple 中可视为多少个 3D 梯度向量
+    size_t rawVecCount = 0;         ///< 理论应比较的梯度向量数量
+    size_t finiteVecCount = 0;      ///< 结果和参考都为有限值的向量数量
+    size_t nonFiniteVecCount = 0;   ///< 含 NaN/Inf 的向量数量
+    size_t lowRefCount = 0;         ///< 参考梯度过小、容易放大相对误差的向量数量
+    double lowRefRatio = 0.0;       ///< 低参考梯度向量占比
 
-    double vecMaeAbs = 0.0;
-    double vecRmseAbs = 0.0;
-    double vecMaxAbs = 0.0;
-    double refScaleRms = 0.0;
-    double nmaeVec = 0.0;
-    double nrmseVec = 0.0;
-    double softRelTau = 0.0;
-    double softRelMean = 0.0;
-    double softRelMedian = 0.0;
-    double softRelP90 = 0.0;
+    double vecMaeAbs = 0.0;         ///< 绝对向量误差 MAE
+    double vecRmseAbs = 0.0;        ///< 绝对向量误差 RMSE
+    double vecMaxAbs = 0.0;         ///< 最大绝对向量误差
+    double refScaleRms = 0.0;       ///< 参考梯度模长的 RMS，用于归一化
+    double nmaeVec = 0.0;           ///< 归一化 MAE
+    double nrmseVec = 0.0;          ///< 归一化 RMSE
+    double softRelTau = 0.0;        ///< soft relative error 的稳定阈值
+    double softRelMean = 0.0;       ///< 全部向量的 soft relative error 均值
+    double softRelMedian = 0.0;     ///< 全部向量的 soft relative error 中位数
+    double softRelP90 = 0.0;        ///< 全部向量的 soft relative error 90 分位
 
-    size_t stableVecCount = 0;
-    double stableMaeAbs = 0.0;
-    double stableRmseAbs = 0.0;
-    double stableSoftRelMean = 0.0;
-    double stableSoftRelMedian = 0.0;
-    double stableSoftRelP90 = 0.0;
+    size_t stableVecCount = 0;      ///< 参考梯度不太小、适合稳定比较的向量数量
+    double stableMaeAbs = 0.0;      ///< stable 子集上的绝对 MAE
+    double stableRmseAbs = 0.0;     ///< stable 子集上的绝对 RMSE
+    double stableSoftRelMean = 0.0; ///< stable 子集上的 soft relative error 均值
+    double stableSoftRelMedian = 0.0; ///< stable 子集上的 soft relative error 中位数
+    double stableSoftRelP90 = 0.0;  ///< stable 子集上的 soft relative error 90 分位
 
-    double angleMeanDeg = 0.0;
-    double angleP90Deg = 0.0;
-    size_t angleCount = 0;
-    double scaleBias = 0.0;
+    double angleMeanDeg = 0.0;      ///< 梯度方向夹角平均值，单位度
+    double angleP90Deg = 0.0;       ///< 梯度方向夹角 90 分位，单位度
+    size_t angleCount = 0;          ///< 参与角度统计的向量数量
+    double scaleBias = 0.0;         ///< 整体尺度偏差，接近 1 更理想
 
-    size_t worstTuple = std::numeric_limits<size_t>::max();
-    int worstVector = -1;
-    double worstErrAbs = 0.0;
-    double worstRefNorm = 0.0;
+    size_t worstTuple = std::numeric_limits<size_t>::max(); ///< 最坏误差对应的 tuple 索引
+    int worstVector = -1;           ///< 最坏误差对应 tuple 内的第几个梯度向量
+    double worstErrAbs = 0.0;       ///< 最坏向量的绝对误差
+    double worstRefNorm = 0.0;      ///< 最坏向量对应参考梯度模长
 
-    double refTimeAvgMs = 0.0;
-    double refTimeMinMs = 0.0;
+    double refTimeAvgMs = 0.0;      ///< 参考方法平均耗时
+    double refTimeMinMs = 0.0;      ///< 参考方法最小耗时
 };
 
+// 几何分析的摘要结果。
+//
+// 这些量不是梯度结果本身，而是帮助解释误差的“背景信息”，例如：
+// - 数据更像体数据还是曲面数据；
+// - 局部维度标签分布如何；
+// - 是否存在明显的近二维/近一维结构。
 struct GeometrySummary
 {
-    bool available = false;
-    int topoDim = 3;
-    int globalGeomDim = 3;
-    bool surfaceLike = false;
-    std::array<double, 3> extents{ 0.0, 0.0, 0.0 };
-    std::array<double, 3> eigenRatios{ 1.0, 1.0, 1.0 };
-    size_t dim1Count = 0;
-    size_t dim2Count = 0;
-    size_t dim3Count = 0;
+    bool available = false;         ///< 是否成功完成几何分析
+    int topoDim = 3;                ///< 由单元类型推断的拓扑维度
+    int globalGeomDim = 3;          ///< 由整体协方差推断的几何维度
+    bool surfaceLike = false;       ///< 是否更像曲面/壳体型数据
+    std::array<double, 3> extents{ 0.0, 0.0, 0.0 }; ///< 包围盒三个方向的尺寸
+    std::array<double, 3> eigenRatios{ 1.0, 1.0, 1.0 }; ///< 全局特征值比例
+    size_t dim1Count = 0;           ///< 局部判定为 1D 的样本数
+    size_t dim2Count = 0;           ///< 局部判定为 2D 的样本数
+    size_t dim3Count = 0;           ///< 局部判定为 3D 的样本数
 };
 
+// 单个测试案例最终写入控制台与 CSV 的记录。
+//
+// 一个案例通常对应“一个字段 + 一组算法参数 + 一种参考来源”的组合。
 struct CaseRecord
 {
-    std::string dataset;
-    std::string association;
-    std::string arrayName;
-    int inputComponents = 0;
-    bool success = false;
-    std::string failureReason;
-    double glWallAvgMs = 0.0;
-    double glWallMinMs = 0.0;
-    double glGpuAvgMs = 0.0;
-    double glGpuMinMs = 0.0;
-    size_t resultTuples = 0;
-    int resultComponents = 0;
-    CompareMetrics ambientMetrics;
-    CompareMetrics intrinsicMetrics;
-    bool hasIntrinsicMetrics = false;
+    std::string dataset;            ///< 数据集显示名
+    std::string association;        ///< POINT 或 CELL
+    std::string arrayName;          ///< 当前测试字段名
+    int inputComponents = 0;        ///< 输入字段分量数
+    bool success = false;           ///< 当前案例是否执行成功
+    std::string failureReason;      ///< 失败原因
+    double glWallAvgMs = 0.0;       ///< 本方法平均墙钟时间
+    double glWallMinMs = 0.0;       ///< 本方法最小墙钟时间
+    double glGpuAvgMs = 0.0;        ///< 本方法平均 GPU 时间
+    double glGpuMinMs = 0.0;        ///< 本方法最小 GPU 时间
+    size_t resultTuples = 0;        ///< 结果字段 tuple 数
+    int resultComponents = 0;       ///< 结果字段分量数
+    CompareMetrics ambientMetrics;  ///< 与环境三维梯度口径比较得到的指标
+    CompareMetrics intrinsicMetrics;///< 与切空间投影梯度口径比较得到的指标
+    bool hasIntrinsicMetrics = false; ///< 是否实际计算了 intrinsic 指标
 };
 
 const char* assocName(CAEFieldAssociation assoc)
@@ -655,6 +686,18 @@ CompareMetrics compareGradients(const std::vector<float>& result,
                                 int resultComps,
                                 const ReferenceData& ref)
 {
+    // 这里是 TestGradient 的核心评价逻辑。
+    //
+    // 评价思路分三层：
+    // 1. 先做绝对向量误差，回答“差了多少”；
+    // 2. 再做归一化/软相对误差，回答“相对量级如何”；
+    // 3. 最后做角度与尺度偏差，回答“方向错了还是幅值错了”。
+    //
+    // 这样才能区分：
+    // - 低梯度区相对误差虚高；
+    // - 法向分量不一致；
+    // - 整体尺度偏大/偏小；
+    // - 少量离群点拖坏总体结果。
     CompareMetrics metrics;
     metrics.haveReference = ref.available;
     metrics.referenceLabel = ref.label;
@@ -811,6 +854,8 @@ CompareMetrics compareGradients(const std::vector<float>& result,
 
 GeometrySummary summarizeGeometry(const GeometryAnalysis& geometry)
 {
+    // GeometryAnalysis 是较底层、更适合算法使用的结构。
+    // 这里将其整理成更适合打印与写 CSV 的轻量摘要。
     GeometrySummary out;
     out.available = geometry.available;
     out.topoDim = geometry.topologicalDim;
@@ -960,6 +1005,15 @@ bool writeCsvReport(const std::string& path,
                     const Options& opt,
                     const std::vector<CaseRecord>& records)
 {
+    // CSV 报告的设计目标不是只保存“一个误差值”，
+    // 而是尽量把后续复盘需要的上下文都带上：
+    // - 实验配置；
+    // - 几何类别；
+    // - 算法参数；
+    // - 多组误差指标；
+    // - 参考来源和计时。
+    //
+    // 这样后续无论用 Excel、Python 还是论文表格整理，都能追溯问题来源。
     std::filesystem::path outPath(path);
     if (!outPath.parent_path().empty()) {
         std::error_code ec;
@@ -1157,6 +1211,16 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
                          const Options& opt,
                          bool verboseSamples)
 {
+    // 一个 case 的执行顺序：
+    // 1. 组装梯度请求；
+    // 2. 重复执行多次，统计 wall/gpu 时间；
+    // 3. 读回结果数组；
+    // 4. 解析或构造参考梯度；
+    // 5. 计算环境梯度误差；
+    // 6. 若是曲面型解析场，再额外计算 intrinsic 指标。
+    //
+    // 其中第 6 步很关键，它能把“算法真的错了”和
+    // “参考梯度口径与曲面问题不完全一致”这两类现象拆开看。
     CaseRecord rec;
     rec.dataset = summary.displayName;
     rec.association = assocName(opt.assoc);
@@ -1254,6 +1318,9 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
 
 int main(int argc, char** argv)
 {
+    // main 负责把“命令行工具”串成一条完整实验链：
+    // 解析参数 -> 初始化门面 -> 读取数据 -> 做几何分析 ->
+    // 选择测试字段 -> 执行 case -> 导出 CSV -> 输出总览统计。
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {

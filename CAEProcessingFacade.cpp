@@ -1409,6 +1409,13 @@ std::vector<CAEDatasetSummary> CAEProcessingFacade::listDatasets() const
 bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
     CAEGradientResultMeta& outMeta)
 {
+    // 这是梯度模块的统一对外入口。
+    // 它的职责不是直接实现某一种算法，而是负责：
+    // 1. 校验数据集和输入字段；
+    // 2. 根据网格类型与请求方法做算法分派；
+    // 3. 触发 OpenGL 计算上下文；
+    // 4. 记录 CPU/GPU 时间；
+    // 5. 把结果重新写回内部数据对象。
     auto it = m_records.find(req.datasetId);
     if (it == m_records.end() || !m_initialized) {
         return false;
@@ -1440,8 +1447,9 @@ bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
     std::vector<float> grad;
     bool ok = false;
 
-    // The GUI owns a separate VTK/Qt render context. Make the facade's
-    // compute context current before issuing any GL commands.
+    // GUI 线程可能持有另一个 VTK/Qt 渲染上下文。
+    // 因此在真正发起 GPU 计算前，必须先切回门面层自己的计算上下文，
+    // 否则后续 SSBO 绑定和 shader 调度可能落到错误的上下文里。
     m_gl.makeCurrent();
     m_lastComputeGpuMs = 0.0;
 
@@ -1489,6 +1497,12 @@ bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
 bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMultiScaleRequest& req,
                                                                   CAEMultiScaleResultMeta& outMeta)
 {
+    // 多尺度优化模块的统一入口。
+    // 主流程可以概括为：
+    // 原始场 -> 多层图双边滤波 -> 相邻层做差得到 detail -> 按权重融合。
+    //
+    // 这里既负责算法调度，也负责把 base / smooth / detail / fused
+    // 这些中间结果按统一命名规则写回数据集，方便测试程序和 ParaView 查看。
     auto it = m_records.find(req.datasetId);
     if (it == m_records.end() || !m_initialized) {
         return false;
@@ -1520,7 +1534,8 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
     const double meanSpacing = estimateMeanNeighborDistance(positions, offsets, neighbors);
     const double valueStd = estimateStdDev(sourceData);
 
-
+    // 这里把“无量纲测试参数”转成与当前数据集尺度相关的实际滤波参数。
+    // 这样做可以避免不同模型尺寸、不同字段幅值下参数完全失去可比性。
     const float spatialSigmaBase =
         std::max(1e-6f, req.spatialSigmaFactor * static_cast<float>(meanSpacing > 0.0 ? meanSpacing : 1.0));
     const float rangeSigmaBase =
@@ -1536,7 +1551,7 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
     std::vector<std::vector<float>> smooth(levelCount + 1);
     smooth[0] = sourceData;
 
-
+    // 第 level 层总是基于上一层结果继续平滑，形成越来越平滑的尺度空间。
     for (int level = 0; level < levelCount; ++level) {
         GLFilterEngine::BilateralParams bp{};
         bp.spatialSigma = spatialSigmaBase * std::pow(req.levelScale, static_cast<float>(level));
@@ -1558,6 +1573,8 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
 
     std::vector<std::vector<float>> detail(levelCount);
     for (int level = 0; level < levelCount; ++level) {
+        // 细节层定义为相邻平滑层之差。
+        // 这样可以把高频结构从低频背景中分离出来，供后续按权重重建。
         subtractField(smooth[level], smooth[level + 1], detail[level]);
     }
 
@@ -1592,6 +1609,7 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
     meta.computeGpuMs = m_lastComputeGpuMs;
 
     if (req.storeIntermediate) {
+        // 保留每层平滑结果和细节结果，便于实验分析、调参和 ParaView 可视化。
         for (int level = 1; level <= levelCount; ++level) {
             const std::string name = makeSmoothName(sourceName, req.association, level);
             if (!rec.data.upsertDataArray(name, smooth[level], inputComponents, dstType)) {
@@ -1610,6 +1628,7 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
 
         meta.baseArrayName = meta.smoothArrayNames.back();
     } else {
+        // 即便不保留全部中间层，也至少保留最终 base 层，方便和 fused 结果对比。
         meta.baseArrayName = makeBaseName(sourceName, req.association);
         if (!rec.data.upsertDataArray(meta.baseArrayName, smooth[levelCount], inputComponents, dstType)) {
             return false;
@@ -1639,6 +1658,9 @@ bool CAEProcessingFacade::exportDatasetToVTK(const std::string& datasetId, vtkSm
 
 bool CAEProcessingFacade::saveDatasetToVTKFile(const std::string& datasetId, const std::string& filePath, bool binary) const
 {
+    // 导出时统一转成 legacy VTK 4.2 兼容布局。
+    // 这样 ParaView 以及部分较老的 reader 都能稳定读取单元连接关系，
+    // 避免新版 OFFSETS/CONNECTIVITY 组织方式带来的兼容性问题。
     vtkSmartPointer<vtkDataSet> outVtk;
     if (!exportDatasetToVTK(datasetId, outVtk) || !outVtk) {
         return false;
@@ -1647,8 +1669,6 @@ bool CAEProcessingFacade::saveDatasetToVTKFile(const std::string& datasetId, con
     vtkNew<vtkDataSetWriter> writer;
     writer->SetFileName(filePath.c_str());
     writer->SetInputData(outVtk);
-    // Write the classic legacy layout so older ParaView / vtkDataReader
-    // can parse cell connectivity without the 5.1 OFFSETS/CONNECTIVITY form.
     writer->SetFileVersion(vtkDataWriter::VTK_LEGACY_READER_VERSION_4_2);
     if (binary) {
         writer->SetFileTypeToBinary();
@@ -1796,6 +1816,15 @@ bool CAEProcessingFacade::ensureAdaptiveSupport(DatasetRecord& rec,
                                                 CAEFieldAssociation assoc,
                                                 const CAEGradientRequest& req)
 {
+    // AWLS 需要一组比“原始邻域图”更丰富的辅助数据：
+    // - 可能扩展后的邻域；
+    // - 局部主方向框架；
+    // - 局部维度标签；
+    // - 邻域质量估计；
+    // - 局部平均邻距。
+    //
+    // 这些量只和几何及参数配置有关，和具体字段值无关，
+    // 所以适合缓存起来，避免每次算不同字段都重复构建。
     AdaptiveGradientSupport& support = (assoc == CAEFieldAssociation::Point)
         ? rec.pointSupport
         : rec.cellSupport;
@@ -1812,6 +1841,7 @@ bool CAEProcessingFacade::ensureAdaptiveSupport(DatasetRecord& rec,
         support.useAdaptiveNeighborhood == cfg.useAdaptiveNeighborhood;
 
     if (sameConfig) {
+        // 参数没有变化时，直接复用缓存支撑信息。
         return true;
     }
 
@@ -1855,6 +1885,12 @@ bool CAEProcessingFacade::computeByAdaptiveWLS(DatasetRecord& rec,
                                                const CAEGradientRequest& req,
                                                std::vector<float>& outGrad)
 {
+    // 这是非结构网格梯度主线的实际执行入口。
+    // 外层 computeGradient 已经完成方法分派；这里专注于：
+    // 1. 构建/复用 AWLS 支撑数据；
+    // 2. 组装 shader 需要的参数；
+    // 3. 调用自适应 AWLS；
+    // 4. 必要时退回传统 WLS。
     if (rec.data.gridType != DATA_OBJECT_TYPE_UNSTRUCTURED ||
         !gradientAssociationMatchesArray(src, req.association)) {
         return false;
@@ -1894,10 +1930,12 @@ bool CAEProcessingFacade::computeByAdaptiveWLS(DatasetRecord& rec,
         wp,
         outGrad);
 
-    // Keep a pure OpenGL fallback path for drivers that reject the adaptive
-    // shader or for supports that still end up numerically awkward. The
-    // fallback reuses the same entity-centered stencil and solves the global
-    // 3D weighted least-squares system without frame-based dimension reduction.
+    // 保留纯 3D WLS 回退路径有两个意义：
+    // 1. 某些驱动或某些数据情况下，自适应 shader 可能执行失败；
+    // 2. 某些局部邻域即使构建了自适应支撑，数值条件仍然可能不理想。
+    //
+    // 回退时继续使用同一套实体中心邻域，但不再做局部维度约化，
+    // 而是直接解传统的全 3D 加权最小二乘问题。
     if (!ok) {
         ok = m_engine.computeUnstructuredWLS(
             positions,

@@ -235,3 +235,4 @@ opengldp_benchmark --dataset=Data\AngularSector.vtk --assoc=cell --array=benchma
 - [系统原理与理论基础](./系统原理与理论基础.md)
 - [系统使用说明](./系统使用说明.md)
 - [文献支撑](./文献支撑.md)
+- [测试程序指标详解](./测试程序指标详解.md)

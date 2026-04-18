@@ -18,6 +18,9 @@
 #include <vtkSmartPointer.h>
 
 namespace {
+// 下面这些局部辅助函数用于构造单元拓扑邻域。
+// 它们的目标是尽量优先使用“真正共享面/边/点”的邻接关系，
+// 而不是简单地依赖几何距离。
 void appendNeighborCells(vtkDataSet* data,
                          vtkIdType cellId,
                          vtkIdList* sharedEntityPointIds,
@@ -334,6 +337,7 @@ int VTKDataConverter::convertCellCenters() {
 }
 
 int VTKDataConverter::convertRegularGrid() {
+    // 规则网格不需要额外推断复杂邻域，主要把几何、维度和字段提取出来即可。
     if (this->internalData->gridType != DATA_OBJECT_TYPE_RegularGrid) {
         std::cerr << "当前数据集不是规则网格，无法执行规则网格转换" << std::endl;
         return 0;
@@ -347,6 +351,12 @@ int VTKDataConverter::convertRegularGrid() {
 }
 
 int VTKDataConverter ::convertUnstructuredGrid() {
+    // 非结构网格比规则网格多出两类关键预处理：
+    // 1. 显式构建点邻域；
+    // 2. 显式构建单元邻域。
+    //
+    // 当前点邻域优先尝试“拓扑 + KNN 补齐”的稳健版本，
+    // 若失败再退回简单拓扑邻接版本。
     if (this->internalData->gridType != DATA_OBJECT_TYPE_UNSTRUCTURED) {
         std::cerr << "当前数据集不是非结构化网格，无法执行非结构化网格转换" << std::endl;
         return 0;
@@ -368,6 +378,7 @@ int VTKDataConverter ::convertUnstructuredGrid() {
 }
 
 int VTKDataConverter::convertVTKToInternal() {
+    // 总入口：先识别网格大类，再分派到规则网格或非结构网格的具体转换流程。
     if (!this->vtkData || !this->internalData) {
         std::cerr << "VTK数据集或内部数据对象未绑定" << std::endl;
         return 0;
@@ -416,6 +427,12 @@ int VTKDataConverter::convertPointNeighborsByKNN(int K) {
 }
 
 int VTKDataConverter::convertCellNeighbors() {
+    // 单元邻域优先按“共享高维拓扑实体”的原则构建：
+    // - 3D 单元优先共享面；
+    // - 2D 单元优先共享边；
+    // - 1D 单元优先共享端点。
+    //
+    // 这样比单纯按中心点距离建图更符合有限元/有限体积网格的局部结构。
     vtkStaticCellLinks* cellLinks = vtkStaticCellLinks::New();
     cellLinks->SetDataSet(this->vtkData);
     cellLinks->BuildLinks();
@@ -492,6 +509,12 @@ int VTKDataConverter::convertCellNeighborsByKNN(int K) {
 
 int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
 {
+    // 稳健点邻域策略：
+    // 1. 先利用共享单元得到拓扑邻域；
+    // 2. 若邻居数不足 `minK`，再用 KNN 补足；
+    // 3. 最终写成 CSR 邻接表。
+    //
+    // 这样既能保留原始拓扑信息，又能减少边界点或稀疏区域邻域过少的问题。
     vtkIdType numPoints = this->vtkData->GetNumberOfPoints();
     if (numPoints <= 0) return 0;
 
@@ -564,6 +587,10 @@ int VTKDataConverter::convertPointNeighborsRobust(int minK, int knnK)
 }
 int VTKDataConverter::convertInternalToVTK()
 {
+    // 从内部数据对象恢复 VTK 数据集时，主要做三件事：
+    // 1. 还原点坐标和拓扑；
+    // 2. 还原点/单元字段；
+    // 3. 根据内部网格类型选择合适的 VTK 容器。
     if (!this->internalData) return 0;
 
     vtkNew<vtkPoints> pts;
