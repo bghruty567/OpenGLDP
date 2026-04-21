@@ -31,6 +31,8 @@
 
 namespace
 {
+// Qt/VTK/门面层之间大量使用 QString 与 std::string 交互，
+// 这里统一放一个转换辅助，避免每次都重复写编码转换。
 std::string toStdString(const QString& s)
 {
     return s.toLocal8Bit().toStdString();
@@ -59,6 +61,10 @@ MainWindow::MainWindow(QWidget* parent)
 
 void MainWindow::buildUi()
 {
+    // 整个窗口分成三列：
+    // 左：数据集管理；
+    // 中：梯度与多尺度参数；
+    // 右：VTK 渲染窗口和日志。
     setWindowTitle("OpenGLDP");
 
     auto* central = new QWidget(this);
@@ -68,6 +74,7 @@ void MainWindow::buildUi()
     rootLayout->addWidget(splitter);
     setCentralWidget(central);
 
+    // 左侧：加载/导出 + 数据集列表。
     auto* leftPanel = new QWidget(this);
     auto* leftLayout = new QVBoxLayout(leftPanel);
 
@@ -82,6 +89,7 @@ void MainWindow::buildUi()
     leftLayout->addWidget(m_datasetList);
     leftLayout->addWidget(m_summaryLabel);
 
+    // 中间：算法参数区。
     auto* middlePanel = new QWidget(this);
     auto* form = new QFormLayout(middlePanel);
 
@@ -91,6 +99,8 @@ void MainWindow::buildUi()
 
     m_arrayBox = new QComboBox(this);
 
+    // “Auto” 是推荐入口：
+    // 规则网格会自动走 FD，非结构网格自动走 AWLS。
     m_methodBox = new QComboBox(this);
     m_methodBox->addItem("Auto");
     m_methodBox->addItem("FiniteDifference");
@@ -106,12 +116,16 @@ void MainWindow::buildUi()
     m_lambdaSpin->setDecimals(8);
     m_lambdaSpin->setValue(1e-3);
 
+    // 一个字段可能是标量、向量或张量展开数组。
+    // 这里控制当前 VTK 颜色映射显示哪一个分量。
     m_componentSpin = new QSpinBox(this);
     m_componentSpin->setRange(0, 0);
 
     m_computeBtn = new QPushButton("Compute Gradient", this);
 
-        m_msLevelsSpin = new QSpinBox(this);
+    // 下面这一组控件直接对应 CAEMultiScaleRequest 中的参数，
+    // 用于把“多尺度分解 + 细节融合”的实验配置暴露给界面。
+    m_msLevelsSpin = new QSpinBox(this);
     m_msLevelsSpin->setRange(1, 3);
     m_msLevelsSpin->setValue(3);
 
@@ -185,6 +199,7 @@ void MainWindow::buildUi()
     form->addRow("", m_optimizeBtn);
 
 
+    // 右侧：VTK 视图 + 运行日志。
     auto* rightPanel = new QWidget(this);
     auto* rightLayout = new QVBoxLayout(rightPanel);
 
@@ -209,6 +224,8 @@ void MainWindow::buildUi()
 
 void MainWindow::bindSignals()
 {
+    // 这一层只做“信号 -> 门面函数”的绑定，
+    // 真正的算法执行都在 CAEProcessingFacade 里。
     connect(m_openBtn, &QPushButton::clicked, this, &MainWindow::openFile);
     connect(m_exportBtn, &QPushButton::clicked, this, &MainWindow::exportCurrentDataset);
     connect(m_computeBtn, &QPushButton::clicked, this, &MainWindow::computeGradient);
@@ -260,6 +277,7 @@ void MainWindow::openFile()
         return;
     }
 
+    // 当前 GUI 只读取 legacy VTK，和命令行测试程序保持一致。
     const QString filePath = QFileDialog::getOpenFileName(
         this, "Open VTK File", QString(), "VTK legacy (*.vtk)");
 
@@ -267,6 +285,7 @@ void MainWindow::openFile()
         return;
     }
 
+    // 真正的读取、VTK -> DataObject 转换，以及字段扫描都交给门面层处理。
     const std::string dsId = m_facade.loadDatasetFromVTKFile(toStdString(filePath));
     if (dsId.empty()) {
         QMessageBox::warning(this, "Load Failed", "Failed to load the VTK file.");
@@ -314,6 +333,8 @@ void MainWindow::computeGradient()
         return;
     }
 
+    // 把界面上当前选择的字段、归属类型和方法参数收集成统一请求对象，
+    // 这样 GUI 和测试程序走的是完全同一条算法入口。
     CAEGradientRequest req;
     req.datasetId = toStdString(dsId);
     req.inputArrayName = toStdString(m_arrayBox->currentText());
@@ -335,6 +356,7 @@ void MainWindow::computeGradient()
                   .arg(meta.computeWallMs, 0, 'f', 3)
                   .arg(meta.computeGpuMs, 0, 'f', 3));
 
+    // 梯度结果会以新数组的形式写回数据集，所以计算完成后要刷新字段列表。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
@@ -354,6 +376,7 @@ void MainWindow::computeMultiScaleOptimization()
         return;
     }
 
+    // 多尺度模块同样通过请求对象调用门面层。
     CAEMultiScaleRequest req;
     req.datasetId = toStdString(dsId);
     req.inputArrayName = toStdString(m_arrayBox->currentText());
@@ -393,6 +416,7 @@ void MainWindow::computeMultiScaleOptimization()
         appendLog("  detail: " + QString::fromStdString(name));
     }
 
+    // 平滑层、细节层和 fused 结果都可能新增到数据集中，因此需要整体刷新。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
@@ -408,6 +432,7 @@ void MainWindow::computeMultiScaleOptimization()
 
 void MainWindow::handleDatasetChanged()
 {
+    // 切换数据集时，左中右三列都要跟着更新。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
@@ -433,6 +458,7 @@ void MainWindow::handleArrayChanged()
     }
 
     const QString currentName = m_arrayBox->currentText();
+    // 根据当前数组的真实分量数，动态限制“可视化分量”选择范围。
     int comps = 1;
     for (const auto& f : fields) {
         if (QString::fromStdString(f.name) == currentName) {
@@ -459,6 +485,7 @@ void MainWindow::refreshFieldList()
         return;
     }
 
+    // 这里只显示当前 Point/Cell 归属下的字段。
     for (const auto& f : fields) {
         m_arrayBox->addItem(QString::fromStdString(f.name));
     }
@@ -480,6 +507,7 @@ void MainWindow::refreshSummary()
         return;
     }
 
+    // 摘要信息只显示最核心的规模信息，避免左侧面板过于拥挤。
     m_summaryLabel->setText(
         QString("Name: %1\nPoints: %2\nCells: %3\nGrid: %4")
             .arg(QString::fromStdString(s.displayName))
@@ -512,6 +540,8 @@ void MainWindow::renderSelectedArray()
         return;
     }
 
+    // 可视化时不直接操作内部 DataObject，而是先导出成 VTK 数据集，
+    // 这样 VTK mapper/actor 可以直接复用标准可视化管线。
     vtkSmartPointer<vtkDataSet> ds;
     if (!m_facade.exportDatasetToVTK(toStdString(dsId), ds) || !ds) {
         return;
@@ -527,6 +557,8 @@ void MainWindow::renderSelectedArray()
     }
 
     const std::string arrayStd = toStdString(arrayName);
+    // 选择字段数组并指定“当前显示第几个分量”，
+    // 适用于标量场、向量场梯度以及多尺度中间数组。
     mapper->SelectColorArray(arrayStd.c_str());
     mapper->ColorByArrayComponent(arrayStd.c_str(), m_componentSpin->value());
     mapper->ScalarVisibilityOn();
@@ -534,6 +566,8 @@ void MainWindow::renderSelectedArray()
     vtkNew<vtkActor> actor;
     actor->SetMapper(mapper);
 
+    // 每次切换数组时直接重建一个新的 mapper/actor，
+    // 逻辑最直观，也最不容易把旧状态残留到新结果上。
     m_renderer->RemoveAllViewProps();
     m_renderer->AddActor(actor);
     m_renderer->ResetCamera();

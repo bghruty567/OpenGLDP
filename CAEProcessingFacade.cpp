@@ -823,7 +823,7 @@ LocalSpectralInfo analyzeNeighborhood(const std::vector<float>& positions,
     }
 
     const size_t n = neighbors.size();
-    const std::uint32_t maxDimByCount = (n <= 2) ? 1u : ((n <= 4) ? 2u : 3u);
+    const std::uint32_t maxDimByCount = (n >= 4) ? 3u : ((n >= 3) ? 2u : 1u);
     info.dimTag = std::min(dim, maxDimByCount);
 
     double spectralQuality = 1.0;
@@ -1326,6 +1326,10 @@ CAEProcessingFacade::~CAEProcessingFacade() {}
 
 bool CAEProcessingFacade::initialize(const std::string& shaderDir)
 {
+    // 门面层初始化分三步：
+    // 1. 建立独立的 OpenGL 计算上下文；
+    // 2. 告诉两个 GPU 引擎去哪里加载 shader；
+    // 3. 初始化成功后打开 GPU 计时，供 GUI/测试程序读取性能数据。
     if (!m_gl.initialize(false)) return false;
 
     m_engine.setShaderDir(shaderDir);
@@ -1354,6 +1358,9 @@ bool CAEProcessingFacade::isAnalyticBenchmarkEnabled() const
 
 std::string CAEProcessingFacade::loadDatasetFromVTKFile(const std::string& filePath)
 {
+    // 数据载入后会立刻转成内部 DataObject。
+    // 这样后续无论是 GUI 可视化、梯度计算还是多尺度滤波，
+    // 都不需要直接依赖 VTK 原始内存布局。
     vtkNew<vtkDataSetReader> r;
     r->SetFileName(filePath.c_str());
     r->Update();
@@ -1381,7 +1388,8 @@ std::string CAEProcessingFacade::loadDatasetFromVTKFile(const std::string& fileP
 
 std::vector<CAEDatasetSummary> CAEProcessingFacade::listDatasets() const
 {
-    //
+    // 把内部 DatasetRecord 压缩成更轻量的摘要结构，供 GUI 列表、
+    // 命令行工具和调试输出统一读取，而不暴露内部缓存细节。
     std::vector<CAEDatasetSummary> out;
     out.reserve(m_records.size());
     for (const auto& kv : m_records) {
@@ -1646,6 +1654,8 @@ bool CAEProcessingFacade::computeMultiScaleDecompositionAndFusion(const CAEMulti
 
 bool CAEProcessingFacade::exportDatasetToVTK(const std::string& datasetId, vtkSmartPointer<vtkDataSet>& outVtk) const
 {
+    // 可视化和导出都走同一条 DataObject -> VTK 转换通道，
+    // 保证 GUI 显示出来的字段和实际写盘的数据保持一致。
     auto it = m_records.find(datasetId);
     if (it == m_records.end()) return false;
 
@@ -1681,6 +1691,8 @@ bool CAEProcessingFacade::saveDatasetToVTKFile(const std::string& datasetId, con
 
 bool CAEProcessingFacade::getDatasetSummary(const std::string& datasetId, CAEDatasetSummary& outSummary) const
 {
+    // 这里复用 listDatasets 的统一摘要构造逻辑，
+    // 避免“单个摘要”和“全部摘要”各自维护一套填充代码。
     auto all = listDatasets();
     for (const auto& s : all) {
         if (s.datasetId == datasetId) {
@@ -1693,6 +1705,8 @@ bool CAEProcessingFacade::getDatasetSummary(const std::string& datasetId, CAEDat
 
 bool CAEProcessingFacade::listFields(const std::string& datasetId, CAEFieldAssociation assoc, std::vector<CAEFieldInfo>& outFields) const
 {
+    // GUI 的 Point/Cell 下拉框和测试程序的字段筛选都依赖这里，
+    // 因此只返回指定归属类型下的字段，避免上层重复判断。
     outFields.clear();
     CAEDatasetSummary s;
     if (!getDatasetSummary(datasetId, s)) return false;
@@ -1704,6 +1718,8 @@ bool CAEProcessingFacade::listFields(const std::string& datasetId, CAEFieldAssoc
 
 bool CAEProcessingFacade::getArrayData(const std::string& datasetId, const std::string& arrayName, CAEFieldAssociation assoc, std::vector<float>& outData, int& outComps) const
 {
+    // 这是测试程序最常用的数据读取接口：
+    // 它直接返回纯扁平数组，方便后续做误差统计、粗糙度分析和 CSV 输出。
     auto it = m_records.find(datasetId);
     if (it == m_records.end()) return false;
     const DataArray* arr = it->second->data.findDataArray(arrayName, toDataArrayType(assoc));
@@ -1719,6 +1735,8 @@ bool CAEProcessingFacade::upsertArrayData(const std::string& datasetId,
                                           const std::vector<float>& data,
                                           int numComponents)
 {
+    // 允许测试程序把 synthetic 字段、噪声字段、参考真值字段重新写回数据集，
+    // 但会先校验 tuple 数是否和当前点/单元数量匹配，避免产生悬空数组。
     auto it = m_records.find(datasetId);
     if (it == m_records.end()) {
         return false;
@@ -1771,6 +1789,8 @@ std::string CAEProcessingFacade::fileNameFromPath(const std::string& path)
 
 std::string CAEProcessingFacade::makeResultName(const std::string& src, CAEFieldAssociation assoc, CAEGradientMethod method)
 {
+    // 统一命名规则让 GUI、测试程序、导出 VTK 都能一眼看出：
+    // 这是哪个源字段、在哪个关联类型上、由哪种梯度算法生成的结果。
     std::string a = assoc == CAEFieldAssociation::Point ? "P" : "C";
     std::string m = "AWLS";
     if (method == CAEGradientMethod::FiniteDifference) {
@@ -1781,6 +1801,11 @@ std::string CAEProcessingFacade::makeResultName(const std::string& src, CAEField
 
 bool CAEProcessingFacade::computeByFD(DatasetRecord& rec, const DataArray& src, std::vector<float>& outGrad) 
 {
+    // FD 路径只服务规则网格。
+    // 它要做的准备主要是：
+    // 1. 根据点场/单元场确定逻辑尺寸；
+    // 2. 取出对应位置数组；
+    // 3. 调用 GPU 有限差分 shader。
     if (rec.data.gridType != DATA_OBJECT_TYPE_RegularGrid) return false;
 
     GLGradientEngine::RegularParams p{};

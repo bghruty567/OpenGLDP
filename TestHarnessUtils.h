@@ -735,7 +735,7 @@ inline GeometryAnalysis analyzeGeometry(const DataObject& data,
         eigenSymmetric3(localCov, frame);
         const int localDim = inferGeometricDimensionFromEigenvalues(
             frame.eigenValues, planeEigenRatio, lineEigenRatio);
-        const std::uint32_t maxDimByCount = (cnt <= 2) ? 1u : ((cnt <= 4) ? 2u : 3u);
+        const std::uint32_t maxDimByCount = (cnt >= 4) ? 3u : ((cnt >= 3) ? 2u : 1u);
         const std::uint32_t topoMaxDim = static_cast<std::uint32_t>(std::clamp(out.topologicalDim, 1, 3));
         out.dimTags[i] = std::min<std::uint32_t>(
             static_cast<std::uint32_t>(localDim),

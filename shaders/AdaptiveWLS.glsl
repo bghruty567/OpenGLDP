@@ -1,16 +1,19 @@
 #version 430
 
+// AWLS：一个线程处理一个样本。
+// 与普通 WLS 相比，这个版本额外拿到了“局部主方向 + 局部维度 + 邻域质量”。
 layout(local_size_x = 256) in;
 
+// binding 约定与 GLGradientEngine::computeUnstructuredAdaptiveWLS 一致。
 layout(std430, binding = 0) readonly buffer P { vec4 pos[]; };
 layout(std430, binding = 1) readonly buffer O { int  off[]; };
 layout(std430, binding = 2) readonly buffer N { int  nbr[]; };
 layout(std430, binding = 3) readonly buffer V { float val[]; };
 layout(std430, binding = 4) writeonly buffer G { float grad[]; };
-layout(std430, binding = 5) readonly buffer F { float frame[]; };
-layout(std430, binding = 6) readonly buffer D { uint dimTag[]; };
-layout(std430, binding = 7) readonly buffer Q { float qual[]; };
-layout(std430, binding = 8) readonly buffer M { float meanDist[]; };
+layout(std430, binding = 5) readonly buffer F { float frame[]; };   // 每个样本 3x3 局部正交框架
+layout(std430, binding = 6) readonly buffer D { uint dimTag[]; };   // 1=线状，2=面状，3=体状
+layout(std430, binding = 7) readonly buffer Q { float qual[]; };    // 邻域质量评分
+layout(std430, binding = 8) readonly buffer M { float meanDist[]; }; // 局部平均邻距
 
 uniform int   uN;
 uniform float uWExp;
@@ -48,6 +51,7 @@ bool chol3(in mat3 A, out mat3 L)
     return true;
 }
 
+// 对 3x3 Cholesky 分解结果做前向替换，求解 L y = b。
 vec3 fwd3(in mat3 L, vec3 b)
 {
     vec3 y;
@@ -57,6 +61,7 @@ vec3 fwd3(in mat3 L, vec3 b)
     return y;
 }
 
+// 对 3x3 Cholesky 分解结果做后向替换，求解 L^T x = y。
 vec3 bwd3(in mat3 L, vec3 y)
 {
     vec3 x;
@@ -66,6 +71,7 @@ vec3 bwd3(in mat3 L, vec3 y)
     return x;
 }
 
+// 2x2 线性方程组求解器，供二维局部拟合使用。
 bool solve2x2(in mat2 A, in vec2 b, out vec2 x)
 {
     float det = A[0][0] * A[1][1] - A[1][0] * A[0][1];
@@ -83,6 +89,7 @@ float getv(int i, int c)
     return val[i * uNumComponents + c];
 }
 
+// 从 frame 缓冲区中读取第 i 个样本的第 axis 根局部主方向。
 vec3 getAxis(int i, int axis)
 {
     int base = i * 9 + axis * 3;
@@ -98,11 +105,19 @@ vec3 safeNormalize(vec3 v, vec3 fallbackAxis)
     return v / n;
 }
 
+// 距离权重。
+// uWExp 越大，说明越偏向近邻样本。
 float computeDistanceWeight(float len)
 {
     return 1.0 / pow(max(len, 1e-6), max(uWExp, 0.0));
 }
 
+// 自适应正则项。
+//
+// 这里把三个量揉在一起：
+// 1. 用户给的基础正则 `uLambda`；
+// 2. 当前局部几何尺度 `h`；
+// 3. 当前邻域质量 `quality`。
 float computeLambdaEff(float traceValue, float h, float quality, int count)
 {
     float lambdaScale = 1.0;
@@ -128,10 +143,13 @@ void main()
     int e = off[i + 1];
     vec3 pi = pos[i].xyz;
 
+    // 从 CPU 端预分析结果中取出局部主方向。
     vec3 e1 = safeNormalize(getAxis(i, 0), vec3(1.0, 0.0, 0.0));
     vec3 e2 = safeNormalize(getAxis(i, 1), vec3(0.0, 1.0, 0.0));
     vec3 e3 = safeNormalize(getAxis(i, 2), vec3(0.0, 0.0, 1.0));
 
+    // 若启用局部维度自适应，则优先相信 CPU 端给出的 dimTag；
+    // 否则强制按三维 WLS 解。
     uint dim = (uEnableAdaptiveDimension != 0) ? clamp(dimTag[i], 1u, 3u) : 3u;
     float q = clamp(qual[i], 0.0, 1.0);
     float h = max(meanDist[i], 1e-6);
@@ -147,6 +165,7 @@ void main()
 
         if (dim == 1u)
         {
+            // 一维局部拟合：只沿主方向 e1 恢复变化率。
             float a11 = 0.0;
             float rhs = 0.0;
 
@@ -175,6 +194,7 @@ void main()
         }
         else if (dim == 2u)
         {
+            // 二维局部拟合：只在切平面 (e1, e2) 上求梯度。
             mat2 A = mat2(0.0);
             vec2 rhs = vec2(0.0);
 
@@ -212,6 +232,7 @@ void main()
         }
         else
         {
+            // 三维局部拟合：退回完整 3D WLS。
             mat3 A = mat3(0.0);
             vec3 rhs = vec3(0.0);
 
@@ -254,6 +275,8 @@ void main()
             }
         }
 
+        // 输出格式与其他梯度 shader 保持一致：
+        // 每个输入分量对应一个 3D 梯度向量。
         grad[base + c * 3 + 0] = g.x;
         grad[base + c * 3 + 1] = g.y;
         grad[base + c * 3 + 2] = g.z;

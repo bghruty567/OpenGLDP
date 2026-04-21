@@ -5,16 +5,19 @@
 #include <iostream>
 #include <sstream>
 
-/*
-* @brief 浠庢枃浠朵腑璇诲彇鏂囨湰鍐呭
-* @param p 鏂囦欢璺緞
-*/
+namespace
+{
+// 读取 compute shader 源码文本。
+//
+// 梯度引擎的三个 GPU 算法（FD / WLS / AWLS）都会走这里读取文件，
+// 便于后续统一处理编译和链接错误。
 static std::string readFileText(const std::string& p)
 {
     std::ifstream f(p, std::ios::binary);
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
 }
 
 GLGradientEngine::GLGradientEngine() {}
@@ -28,23 +31,26 @@ bool GLGradientEngine::setShaderDir(const std::string& dir)
 
 void GLGradientEngine::ensureBuffer(GLuint& id, size_t bytes, GLenum usage)
 {
+    // 统一封装 SSBO 的创建和重分配逻辑。
+    // 这样三条算法路径只需要关注“我要传什么数据”，
+    // 不用每次都重复写 glGenBuffers / glBufferData。
     if (id == 0)
     {
-        glGenBuffers(1, &id);//鍒涘缓鏂扮紦鍐插尯
+        glGenBuffers(1, &id);
     }
 
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);//缁戝畾缂撳啿鍖哄璞″埌GL_SHADER_STORAGE_BUFFER鐩爣
-    glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, nullptr, usage);//鍒嗛厤鎴栭噸鏂板垎閰嶇紦鍐插尯鏁版嵁瀛樺偍
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, nullptr, usage);
 }
 
 GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
 {
-    //妫€鏌penGL涓婁笅鏂囩増鏈紝纭繚鏀寔璁＄畻鐫€鑹插櫒
+    // 计算着色器至少要求 OpenGL 4.3。
     GLint major = 0;
     GLint minor = 0;
 
-    glGetIntegerv(GL_MAJOR_VERSION, &major);//鑾峰彇OpenGL涓荤増鏈彿
-    glGetIntegerv(GL_MINOR_VERSION, &minor);//鑾峰彇OpenGL娆＄増鏈彿
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
 
     if (major < 4 || (major == 4 && minor < 3))
     {
@@ -54,7 +60,7 @@ GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
         return 0;
     }
 
-    GLuint sh = glCreateShader(GL_COMPUTE_SHADER);//鍒涘缓璁＄畻鐫€鑹插櫒瀵硅薄
+    GLuint sh = glCreateShader(GL_COMPUTE_SHADER);
     GLenum err = glGetError();
 
     if (sh == 0 || err != GL_NO_ERROR)
@@ -64,7 +70,7 @@ GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
         return 0;
     }
 
-    std::string src = readFileText(path);//浠庢寚瀹氳矾寰勮鍙栫潃鑹插櫒婧愪唬鐮佹枃鏈?
+    std::string src = readFileText(path);
     if (src.empty())
     {
         std::cerr << "[GL] shader source is empty: " << path << "\n";
@@ -74,11 +80,11 @@ GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
 
     const char* c = src.c_str();
 
-    glShaderSource(sh, 1, &c, nullptr);//璁剧疆鐫€鑹插櫒婧愪唬鐮?
-    glCompileShader(sh);//缂栬瘧鐫€鑹插櫒
+    glShaderSource(sh, 1, &c, nullptr);
+    glCompileShader(sh);
 
     GLint ok = 0;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);//妫€鏌ョ潃鑹插櫒缂栬瘧鏄惁鎴愬姛
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (!ok)
     {
         GLint logLen = 0;
@@ -92,13 +98,13 @@ GLuint GLGradientEngine::buildComputeFromFile(const std::string& path)
         return 0;
     }
 
-    GLuint pr = glCreateProgram();//鍒涘缓鐫€鑹插櫒绋嬪簭瀵硅薄
+    GLuint pr = glCreateProgram();
 
-    glAttachShader(pr, sh);//灏嗙紪璇戝ソ鐨勭潃鑹插櫒瀵硅薄闄勫姞鍒扮▼搴忓璞′笂
-    glLinkProgram(pr);//閾炬帴绋嬪簭瀵硅薄
-    glDeleteShader(sh);//閾炬帴瀹屾垚鍚庡彲浠ュ垹闄ょ潃鑹插櫒瀵硅薄
+    glAttachShader(pr, sh);
+    glLinkProgram(pr);
+    glDeleteShader(sh);
 
-    glGetProgramiv(pr, GL_LINK_STATUS, &ok);//妫€鏌ョ▼搴忛摼鎺ユ槸鍚︽垚鍔?
+    glGetProgramiv(pr, GL_LINK_STATUS, &ok);
     if (!ok)
     {
         GLint logLen = 0;
@@ -120,6 +126,10 @@ bool GLGradientEngine::init()
     if (shaderDir.empty())
         return false;
 
+    // 梯度模块当前固定维护三份 compute shader：
+    // 1. 规则网格有限差分；
+    // 2. 传统三维 WLS；
+    // 3. 带局部维度/质量信息的 AWLS。
     if (progRegular == 0)
     {
         progRegular = buildComputeFromFile(shaderDir + "\\FD.glsl");
@@ -174,13 +184,15 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
                                         std::vector<float>& outGrad)
 {
     if (progRegular == 0) return false;
-    int64_t n = int64_t(p.dims[0]) * p.dims[1] * p.dims[2];//璁＄畻缃戞牸鐐规€绘暟
+    // 规则网格上，样本天然按三维索引组织，
+    // shader 可以直接按 (i,j,k) 找前后邻居做有限差分。
+    int64_t n = int64_t(p.dims[0]) * p.dims[1] * p.dims[2];
     if (n <= 0) return false;
     if (positions.size() != size_t(n) * 3) return false;
     if (values.empty() || (int64_t)(values.size() % n) != 0) return false;
 
-    int comps = int((int64_t)values.size() / n);//纭畾鏁版嵁鍒嗛噺鏁?
-    outGrad.resize(size_t(n) * size_t(3 * comps));//璋冩暣杈撳嚭姊害鏁扮粍澶у皬
+    int comps = int((int64_t)values.size() / n);
+    outGrad.resize(size_t(n) * size_t(3 * comps));
 
     ensureBuffer(ssbo0, positions.size() * sizeof(float), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
@@ -197,10 +209,10 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo2);
 
     glUseProgram(progRegular);
-    GLint ld = glGetUniformLocation(progRegular, "uDims");//鑾峰彇鐫€鑹插櫒涓璾Dims鍙橀噺鐨勪綅缃?
-    GLint lc = glGetUniformLocation(progRegular, "uNumComponents");//鑾峰彇鐫€鑹插櫒涓璾NumComponents鍙橀噺鐨勪綅缃?
-    glUniform3ui(ld, (GLuint)p.dims[0], (GLuint)p.dims[1], (GLuint)p.dims[2]);//灏嗙綉鏍肩淮搴︿俊鎭紶閫掔粰鐫€鑹插櫒
-    glUniform1i(lc, comps);//灏嗘暟鎹垎閲忔暟浼犻€掔粰鐫€鑹插櫒
+    GLint ld = glGetUniformLocation(progRegular, "uDims");
+    GLint lc = glGetUniformLocation(progRegular, "uNumComponents");
+    glUniform3ui(ld, (GLuint)p.dims[0], (GLuint)p.dims[1], (GLuint)p.dims[2]);
+    glUniform1i(lc, comps);
 
     GLuint gx = (p.dims[0] + 7) / 8;
     GLuint gy = (p.dims[1] + 7) / 8;
@@ -210,7 +222,7 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
         glBeginQuery(GL_TIME_ELAPSED, timeQuery);
     }
 
-    glDispatchCompute(gx, gy, gz);//鍚姩璁＄畻鐫€鑹插櫒
+    glDispatchCompute(gx, gy, gz);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     if (enableGpuTiming) {
@@ -221,7 +233,7 @@ bool GLGradientEngine::computeRegularFD(const std::vector<float>& positions,
     }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());//浠嶨PU缂撳啿鍖鸿鍙栬绠楃粨鏋?
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, outGrad.size() * sizeof(float), outGrad.data());
     return true;
 }
 
@@ -249,7 +261,8 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
 
     outGrad.resize(np * size_t(3 * comps));
 
-    // WLS璁＄畻鐫€鑹插櫒涓瘡涓偣鐨勪綅缃娇鐢╲ec4鏍煎紡瀛樺偍锛岀鍥涘垎閲忓～鍏呬负0锛屼互婊¤冻std140甯冨眬瑕佹眰
+    // WLS/AWLS 的 shader 都按 vec4 方式读取位置。
+    // 这里显式把 [x,y,z] 打包成 [x,y,z,0]，避免布局对齐带来的歧义。
     std::vector<float> pos4(np * 4);
     for (size_t i = 0; i < np; ++i)
     {
@@ -259,22 +272,24 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
         pos4[i * 4 + 3] = 0.0f;
     }
 
-    ensureBuffer(ssbo0, pos4.size() * sizeof(float), GL_DYNAMIC_DRAW);//鐐?
+    // ssbo0~ssbo4 是传统 WLS 的核心输入输出：
+    // 位置、邻域偏移、邻域索引、输入场、输出梯度。
+    ensureBuffer(ssbo0, pos4.size() * sizeof(float), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo0);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     pos4.size() * sizeof(float), pos4.data());
 
-    ensureBuffer(ssbo1, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);//閭诲煙鍋忕Щ
+    ensureBuffer(ssbo1, offsets.size() * sizeof(int), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo1);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     offsets.size() * sizeof(int), offsets.data());
 
-    ensureBuffer(ssbo2, neighbors.size() * sizeof(int), GL_DYNAMIC_DRAW);//閭诲煙鐐圭储寮?
+    ensureBuffer(ssbo2, neighbors.size() * sizeof(int), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     neighbors.size() * sizeof(int), neighbors.data());
 
-    ensureBuffer(ssbo3, phi.size() * sizeof(float), GL_DYNAMIC_DRAW);//杈撳叆鏁版嵁
+    ensureBuffer(ssbo3, phi.size() * sizeof(float), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     phi.size() * sizeof(float), phi.data());
@@ -294,10 +309,10 @@ bool GLGradientEngine::computeUnstructuredWLS(const std::vector<float>& position
     GLint luL = glGetUniformLocation(progWLS, "uLambda");
     GLint luC = glGetUniformLocation(progWLS, "uNumComponents");
 
-    glUniform1i(luN, (int)np);//灏嗙偣鏁颁紶閫掔粰鐫€鑹插櫒
-    glUniform1f(luE, p.wExponent);//灏嗘潈閲嶆寚鏁颁紶閫掔粰鐫€鑹插櫒
-    glUniform1f(luL, p.lambda);//灏嗘鍒欏寲鍙傛暟浼犻€掔粰鐫€鑹插櫒
-    glUniform1i(luC, comps);//灏嗘暟鎹垎閲忔暟浼犻€掔粰鐫€鑹插櫒
+    glUniform1i(luN, (int)np);
+    glUniform1f(luE, p.wExponent);
+    glUniform1f(luL, p.lambda);
+    glUniform1i(luC, comps);
 
     GLuint gx = (GLuint)((np + 255) / 256);
 
@@ -354,6 +369,11 @@ bool GLGradientEngine::computeUnstructuredAdaptiveWLS(const std::vector<float>& 
     const int comps = int(phi.size() / np);
     outGrad.resize(np * size_t(3 * comps));
 
+    // AWLS 在普通 WLS 的基础上额外引入四类辅助信息：
+    // 1. frames：局部主方向基；
+    // 2. dimTags：局部更像线/面/体；
+    // 3. quality：邻域质量评分；
+    // 4. meanNeighborDistance：局部平均邻距。
     std::vector<float> pos4(np * 4);
     for (size_t i = 0; i < np; ++i)
     {
@@ -418,6 +438,7 @@ bool GLGradientEngine::computeUnstructuredAdaptiveWLS(const std::vector<float>& 
     glUniform1i(glGetUniformLocation(progAdaptiveWLS, "uEnableAdaptiveDimension"), p.enableAdaptiveDimension);
     glUniform1i(glGetUniformLocation(progAdaptiveWLS, "uEnableAdaptiveRegularization"), p.enableAdaptiveRegularization);
 
+    // AWLS 仍然保持“一样本一个线程”的执行模式。
     const GLuint gx = (GLuint)((np + 255) / 256);
     if (enableGpuTiming) {
         if (timeQuery == 0) glGenQueries(1, &timeQuery);
@@ -442,7 +463,7 @@ bool GLGradientEngine::computeUnstructuredAdaptiveWLS(const std::vector<float>& 
 void GLGradientEngine::setEnableGpuTiming(bool on)
 {
     enableGpuTiming = on;
-    //濡傛灉鍚敤GPU璁℃椂浣嗘煡璇㈠璞″皻鏈垱寤猴紝鍒欏垱寤轰竴涓柊鐨勬煡璇㈠璞?
+    // 如果第一次启用 GPU 计时，则顺便创建时间查询对象。
     if (enableGpuTiming && timeQuery == 0) {
         glGenQueries(1, &timeQuery);
     }

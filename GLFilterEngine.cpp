@@ -7,6 +7,10 @@
 
 namespace
 {
+// 读取 shader 源码文本。
+//
+// 这里只做最轻量的文件读取，具体的“版本检查、编译失败日志、链接失败日志”
+// 都交给 buildComputeFromFile 统一处理。
 std::string readFileText(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -27,6 +31,8 @@ bool GLFilterEngine::setShaderDir(const std::string& dir)
 
 void GLFilterEngine::ensureBuffer(GLuint& id, size_t bytes, GLenum usage)
 {
+    // OpenGL 不允许申请 0 字节缓冲。
+    // 某些极端情况下输入为空时，也给一个最小占位容量。
     if (bytes == 0) {
         bytes = 4;
     }
@@ -39,6 +45,7 @@ void GLFilterEngine::ensureBuffer(GLuint& id, size_t bytes, GLenum usage)
 
 GLuint GLFilterEngine::buildComputeFromFile(const std::string& path)
 {
+    // 计算着色器依赖 OpenGL 4.3+。
     GLint major = 0;
     GLint minor = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
@@ -92,6 +99,9 @@ bool GLFilterEngine::init()
         return false;
     }
 
+    // 数据优化模块只依赖两份 compute shader：
+    // 1. Bilateral.glsl：图双边滤波；
+    // 2. MultiScaleFuse.glsl：多尺度细节融合。
     if (progBilateral == 0) {
         progBilateral = buildComputeFromFile(shaderDir + "\\Bilateral.glsl");
     }
@@ -132,6 +142,10 @@ bool GLFilterEngine::bilateralGraph(const std::vector<float>& positions,
                                     const BilateralParams& p,
                                     std::vector<float>& outValues)
 {
+    // 双边滤波阶段的完整职责：
+    // 1. 上传“几何 + 邻接图 + 输入字段”；
+    // 2. 在每个样本的邻域内做空间权重和数值权重的联合加权；
+    // 3. 读回平滑后的结果。
     const size_t np = positions.size() / 3;
     if (progBilateral == 0 || np == 0) {
         return false;
@@ -149,6 +163,8 @@ bool GLFilterEngine::bilateralGraph(const std::vector<float>& positions,
     const int comps = static_cast<int>(values.size() / np);
     outValues.resize(values.size());
 
+    // 位置统一打包成 vec4，最后一维留作填充。
+    // 这样 shader 端按 vec4 读取时不会踩到对齐问题。
     std::vector<float> pos4(np * 4, 0.0f);
     for (size_t i = 0; i < np; ++i) {
         pos4[i * 4 + 0] = positions[i * 3 + 0];
@@ -188,6 +204,7 @@ bool GLFilterEngine::bilateralGraph(const std::vector<float>& positions,
     glUniform1f(glGetUniformLocation(progBilateral, "uSpatialSigma"), std::max(1e-6f, p.spatialSigma));
     glUniform1f(glGetUniformLocation(progBilateral, "uRangeSigma"), std::max(1e-6f, p.rangeSigma));
 
+    // shader 里 local_size_x 固定为 256，所以这里按一维工作网格分派即可。
     const GLuint gx = static_cast<GLuint>((np + 255) / 256);
 
     if (enableGpuTiming) {
@@ -220,6 +237,9 @@ bool GLFilterEngine::fuseMultiScale(const std::vector<float>& base,
                                     const FusionParams& p,
                                     std::vector<float>& outValues)
 {
+    // 融合阶段已经不关心网格拓扑，而是只关心四组等长数组：
+    // 一个 base 层 + 三个 detail 层。
+    // shader 会根据细节强度自动决定该加回多少 detail。
     if (progFusion == 0 || base.empty()) {
         return false;
     }
@@ -260,6 +280,7 @@ bool GLFilterEngine::fuseMultiScale(const std::vector<float>& base,
     glUniform3f(glGetUniformLocation(progFusion, "uDetailGains"),
                 p.detailGains[0], p.detailGains[1], p.detailGains[2]);
 
+    // 与双边滤波类似，融合也是每个标量样本独立执行。
     const GLuint gx = static_cast<GLuint>((base.size() + 255) / 256);
 
     if (enableGpuTiming) {

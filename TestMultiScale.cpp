@@ -32,7 +32,8 @@ enum class RunMode
 // 2. fields：真实字段的工程观察实验。
 struct Options
 {
-    std::string path = "Data\\notch_stress.vtk";
+    std::string file="ShipHull_0";
+    std::string path = "Data\\"+file+".vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     RunMode runMode = RunMode::Synthetic;
     std::string arrayName;
@@ -45,8 +46,8 @@ struct Options
     bool listFields = false;
     bool listSynthetic = false;
     bool showConfig = false;
-    std::string csvPath = "results\\multiscale_report.csv";
-    std::string exportPath="results\\multiscale_report.vtk";
+    std::string csvPath = "results\\multiscale_report+point.csv";
+    std::string exportPath="results\\multiscale"+file+"cell.vtk";
 
     float spatialSigmaFactor = 1.5f;
     float rangeSigmaFactor = 0.5f;
@@ -181,6 +182,8 @@ bool parseFloatOption(const std::string& value, float& out)
 
 void printHelp()
 {
+    // 多尺度测试程序支持 synthetic 和 fields 两类模式，
+    // 这里把所有关键入口都集中列出，方便直接从命令行复现实验。
     std::cout
         << "Usage:\n"
         << "  opengldp_multiscale_test [dataset] [point|cell] [options]\n\n"
@@ -222,6 +225,8 @@ void printHelp()
 
 bool parseCommandLine(int argc, char** argv, Options& opt)
 {
+    // 与 TestGradient 一样，这里也采用“先 positional、再命名选项覆盖”的策略，
+    // 兼顾短命令使用体验和参数可读性。
     std::vector<std::string> positional;
     positional.reserve(static_cast<size_t>(std::max(argc - 1, 0)));
 
@@ -430,6 +435,8 @@ bool parseCommandLine(int argc, char** argv, Options& opt)
 
 bool shouldKeepField(const CAEFieldInfo& field, const Options& opt)
 {
+    // 这里负责把“哪些字段适合拿来做多尺度实验”过滤出来。
+    // 已经生成过的中间层 `_ms_` 和梯度真值数组不再重复参与实验。
     if (!opt.arrayName.empty() && field.name != opt.arrayName) {
         return false;
     }
@@ -447,6 +454,7 @@ bool shouldKeepField(const CAEFieldInfo& field, const Options& opt)
 
 std::vector<NoiseKind> resolveNoiseKinds(const Options& opt)
 {
+    // “all” 会一次生成三类噪声案例，其余模式只返回单一噪声类型。
     const std::string mode = toLower(opt.noiseMode);
     if (mode == "gaussian") {
         return { NoiseKind::Gaussian };
@@ -463,6 +471,9 @@ std::vector<NoiseKind> resolveNoiseKinds(const Options& opt)
 ErrorMetrics computeErrorMetrics(const std::vector<float>& values,
                                  const std::vector<float>& reference)
 {
+    // 这里专门针对标量场去噪实验做误差汇总。
+    // 和梯度测试相比，它更关心“降噪后离真值近了多少”，
+    // 所以指标保持为 MAE / RMSE / 最大误差 / 归一化误差这几项。
     ErrorMetrics out;
     out.available = values.size() == reference.size() && !values.empty();
     out.sampleCount = values.size();

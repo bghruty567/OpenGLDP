@@ -8,17 +8,19 @@
 
 struct OpenGLRuntimeInfo
 {
-	std::string vendor;// GPU供应商信息
-	std::string renderer;// GPU渲染器信息
-	std::string version;// OpenGL版本信息
-	std::string glsl;// GLSL版本信息
-	int major = 0;// OpenGL主版本号
-	int minor = 0;// OpenGL次版本号
+	std::string vendor;   // GPU 供应商信息
+	std::string renderer; // 驱动报告的具体渲染器名称
+	std::string version;  // OpenGL 版本字符串
+	std::string glsl;     // GLSL 版本字符串
+	int major = 0;        // OpenGL 主版本号
+	int minor = 0;        // OpenGL 次版本号
 };
 
-/*
-* @brief OpenGLManager类负责管理OpenGL上下文和相关信息
-*/
+/// 轻量级 OpenGL 运行时管理器。
+///
+/// 本项目需要一套“独立于 Qt/VTK 显示窗口”的 OpenGL 上下文，
+/// 用来安全地执行 compute shader、SSBO 上传和 GPU 计时。
+/// `OpenGLManager` 只负责这件事，不负责具体算法。
 class OpenGLManager
 {
 public:
@@ -31,7 +33,10 @@ public:
 #endif
     }
 
-    // offscreen 参数先保留，将来你可以根据需要控制窗口是否可见
+    /// 创建并初始化 OpenGL 上下文。
+    ///
+    /// `offscreen=true` 时会优先创建一个不可见的 dummy window，
+    /// 让 compute shader 拥有稳定的 WGL 上下文。
     bool initialize(bool offscreen = false)
     {
 #ifdef _WIN32
@@ -74,6 +79,7 @@ public:
     void makeCurrent()
     {
 #ifdef _WIN32
+        // 每次真正发起 GPU 计算前，门面层都会切回这套上下文。
         if (m_hdc && m_hglrc) {
             wglMakeCurrent(m_hdc, m_hglrc);
         }
@@ -92,6 +98,13 @@ private:
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 
+    /// 在 Windows 下创建最小可用的 OpenGL 上下文。
+    ///
+    /// 实现顺序是：
+    /// 1. 注册一个 dummy window 类；
+    /// 2. 创建 1x1 小窗口；
+    /// 3. 选择像素格式并建立 WGL 上下文；
+    /// 4. 调用 glad 装载 OpenGL 函数指针。
     bool createContext(bool offscreen)
     {
         HINSTANCE hInst = GetModuleHandleA(nullptr);
@@ -166,6 +179,7 @@ private:
         return true;
     }
 
+    /// 释放 OpenGL 上下文及其依附的窗口/设备资源。
     void destroyContext()
     {
         if (m_hglrc) {

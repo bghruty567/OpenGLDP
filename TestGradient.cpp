@@ -51,19 +51,20 @@ enum class RunMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string path = "Data\\notch_stress.vtk";
-    CAEFieldAssociation assoc = CAEFieldAssociation::Point;
+    std::string file="notch_stress";
+    std::string path = "Data\\"+file+".vtk";
+    CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     std::string arrayName;
     int reps = 5;
-    bool enableAnalyticBenchmarks = false;
+    bool enableAnalyticBenchmarks = true;
     ReferenceMode referenceMode = ReferenceMode::Auto;
     int maxSamplesToPrint = 12;
-    RunMode runMode = RunMode::Single;
+    RunMode runMode = RunMode::Fields;
     bool listFields = false;
     bool listBenchmarks = false;
     bool showConfig = false;
     std::string nameFilter;
-    std::string csvPath = "results\\gradient_report.csv";
+    std::string csvPath = "results\\"+file+"cell.csv";
 
     CAEGradientMethod method = CAEGradientMethod::Auto;
     bool useAdaptiveNeighborhood = true;
@@ -313,6 +314,8 @@ bool parseFloatOption(const std::string& value, float& out)
 
 void printHelp()
 {
+    // 这份帮助文本基本覆盖了 TestGradient 的全部实验入口。
+    // 当你想复现实验或改参数时，最先看这里通常最快。
     std::cout
         << "Usage:\n"
         << "  opengldp_benchmark [dataset] [point|cell] [array] [reps] [options]\n\n"
@@ -346,6 +349,9 @@ void printHelp()
 
 bool parseCommandLine(int argc, char** argv, Options& opt)
 {
+    // 参数解析分成两轮：
+    // 1. 先收集 positional 参数，兼容最短命令格式；
+    // 2. 再解析命名选项，让后者可以覆盖前者。
     std::vector<std::string> positional;
     positional.reserve(static_cast<size_t>(std::max(argc - 1, 0)));
 
@@ -588,6 +594,8 @@ ReferenceData buildAnalyticReference(CAEProcessingFacade& facade,
                                      const std::string& arrayName,
                                      CAEFieldAssociation assoc)
 {
+    // 若数据集中存在 *_exact_grad，就把它当作最高优先级参考真值。
+    // 这种参考通常来自 synthetic/benchmark 场，最适合做精确误差对比。
     ReferenceData out;
     out.label = "ANALYTIC";
     const std::string refArray = arrayName + "_exact_grad";
@@ -604,6 +612,8 @@ ReferenceData buildVtkReference(vtkDataSet* dataset,
                                 CAEFieldAssociation assoc,
                                 int reps)
 {
+    // 当没有解析真值时，用 vtkGradientFilter 作为“工程基线”参考。
+    // 同时顺便统计它的运行时间，便于和本项目 GPU 实现做对照。
     ReferenceData out;
     out.label = "VTK";
     if (!dataset) {
@@ -665,6 +675,8 @@ ReferenceData resolveReference(CAEProcessingFacade& facade,
                                ReferenceMode mode,
                                int reps)
 {
+    // Auto 模式优先尝试解析真值，拿不到时再退回 VTK。
+    // 这样 benchmark 数据和真实工程数据都能共用一套实验脚本。
     if (mode == ReferenceMode::None) {
         return ReferenceData{};
     }

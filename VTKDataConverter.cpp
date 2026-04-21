@@ -1,4 +1,9 @@
 // VTKDataConverter.cpp
+//
+// 这个文件承担“VTK 世界 <-> 项目内部 DataObject 世界”的桥接工作。
+// 理解项目时，可以把它看成一层数据重排器：
+// 1. 把 VTK 的对象式结构拆成适合 GPU 访问的扁平数组；
+// 2. 把内部结果数组再拼回 VTK 数据集，交给 GUI / ParaView 使用。
 #include "VTKDataConverter.h"
 #include <vtkDataSet.h>
 #include <vtkPointData.h>
@@ -119,12 +124,15 @@ VTKDataConverter::~VTKDataConverter() {}
 
 
 void VTKDataConverter::bindVTKDataAndInternalData(vtkDataSet* vtkData, DataObject* internalData) {
+    // 转换器本身不拥有这两份数据，只是临时借用它们做双向转换。
     this->vtkData = vtkData;
     this->internalData = internalData;
 }
 
 
 int VTKDataConverter::convertPoints() {
+    // 所有点坐标统一压平成 [x0,y0,z0,x1,y1,z1,...]。
+    // 这样后续上传 SSBO 时不需要再做额外的数据重排。
     vtkPoints* VTKPoints = this->vtkData->GetPoints();
     if (!VTKPoints) {
         //std::cerr << "数据集中没有点数据" << std::endl;
@@ -148,6 +156,8 @@ int VTKDataConverter::convertPoints() {
 }
 
 int VTKDataConverter::convertDataArrays() {
+    // 点数组和单元数组都统一转成 DataArray。
+    // 对算法层来说，二者差别只体现在“关联类型”和“采样位置”上。
     // 点数组
     if (auto* pointData = this->vtkData->GetPointData()) {
         int nP = pointData->GetNumberOfArrays();
@@ -197,7 +207,11 @@ int VTKDataConverter::convertDataArrays() {
     return 1;
 }
 
-// 获取点所属单元邻域信息std::vector<int> cellNeighbors;[c0,c2,c5,c1,c3...]
+// 构建“每个点属于哪些单元”的邻接表。
+//
+// 这个结构主要服务于：
+// 1. 更丰富的拓扑分析；
+// 2. 后续如果需要做 point-cell 混合算子时复用。
 int VTKDataConverter::convertPointInCellNeighbors() {
     vtkStaticCellLinks* cellLinks = vtkStaticCellLinks::New();
     cellLinks->SetDataSet(this->vtkData);
@@ -224,6 +238,8 @@ int VTKDataConverter::convertPointInCellNeighbors() {
 
 
 int VTKDataConverter::convertPointNeighbors() {
+    // 这是最直接的点邻域构造方式：
+    // 共享同一个单元的点，视为拓扑邻居。
     vtkStaticCellLinks* cellLinks = vtkStaticCellLinks::New();
     cellLinks->SetDataSet(this->vtkData);
     cellLinks->BuildLinks();
@@ -260,6 +276,9 @@ int VTKDataConverter::convertPointNeighbors() {
 
 
 int VTKDataConverter::convertCell(){
+    // 单元连接关系最终统一写成 CSR 风格：
+    // cellOffsets 给出每个单元在 cells 数组中的范围，
+    // cellTypes 保留原始 VTK 单元类型，便于导出时恢复。
     vtkIdType numCells = this->vtkData->GetNumberOfCells();
     this->internalData->cells.clear();
     this->internalData->cellTypes.clear();
@@ -283,6 +302,8 @@ int VTKDataConverter::convertCell(){
 
 
 int VTKDataConverter::convertType(){
+    // 当前项目对外只保留两大类网格：
+    // 规则网格（FD）和非结构网格（AWLS）。
     if (this->vtkData->IsA("vtkUnstructuredGrid")){
         this->internalData->gridType = DATA_OBJECT_TYPE_UNSTRUCTURED;
     }
@@ -297,6 +318,8 @@ int VTKDataConverter::convertType(){
 }
 
 int VTKDataConverter::convertDimensions() {
+    // 规则网格额外需要尺寸信息 [nx, ny, nz]，
+    // 后续有限差分会依赖它来恢复三维索引。
     if (this->internalData->gridType == DATA_OBJECT_TYPE_RegularGrid) {
         int dims[3];
         if (vtkStructuredGrid* structuredGrid = vtkStructuredGrid::SafeDownCast(this->vtkData)) {
@@ -320,6 +343,8 @@ int VTKDataConverter::convertDimensions() {
 }
 
 int VTKDataConverter::convertCellCenters() {
+    // 单元字段在做梯度和滤波时，通常以“单元中心”作为几何采样位置。
+    // 这里不简单做顶点平均，而是通过 VTK 的参数坐标接口求更稳妥的中心。
     vtkIdType numCells = this->vtkData->GetNumberOfCells();
     this->internalData->cellCenters.clear();
     this->internalData->cellCenters.reserve(static_cast<size_t>(numCells * 3));
@@ -399,6 +424,8 @@ int VTKDataConverter::convertVTKToInternal() {
 }
 
 int VTKDataConverter::convertPointNeighborsByKNN(int K) {
+    // 纯几何 KNN 邻域。
+    // 它更适合做参考或回退方案，不如拓扑邻域那样贴近有限元网格结构。
     if (!this->vtkData || !this->internalData) return 0;
     vtkNew<vtkKdTreePointLocator> locator;
     locator->SetDataSet(this->vtkData);
@@ -468,6 +495,8 @@ int VTKDataConverter::convertCellNeighbors() {
 }
 
 int VTKDataConverter::convertCellNeighborsByKNN(int K) {
+    // 纯几何版本的单元邻域：按单元中心的最近邻建立。
+    // 与拓扑邻接相比，它更简单，但可能跨层/跨面连错。
     if (!this->vtkData || !this->internalData) return 0;
     const size_t n3 = this->internalData->cellCenters.size();
     if (n3 % 3 != 0) return 0;
