@@ -32,7 +32,7 @@ enum class RunMode
 // 2. fields：真实字段的工程观察实验。
 struct Options
 {
-    std::string file="ShipHull_0";
+    std::string file="notch_stress";
     std::string path = "Data\\"+file+".vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     RunMode runMode = RunMode::Synthetic;
@@ -58,6 +58,9 @@ struct Options
     float detailGain2 = 0.5f;
 
     float sigmaFactor = 0.35f;
+    float corrLengthFactor = 1.0f;
+    int corrIters = 4;
+    float corrAlpha = 0.8f;
     float impulseRatio = 0.04f;
     float impulseScale = 2.5f;
     int seed = 1337;
@@ -124,6 +127,10 @@ struct CaseRecord
     double maeImprovementRatio = 0.0; ///< `fused_mae / input_mae`
     double rmseImprovementRatio = 0.0; ///< `fused_rmse / input_rmse`
     double roughnessRatio = 0.0;    ///< `fused_roughness / input_roughness`
+    double injectedNoiseStd = 0.0; ///< actual std of injected noise
+    double injectedNoiseNeighborCorr = 0.0; ///< graph-neighbor correlation of injected noise
+    double injectedNoiseMeanNeighborDist = 0.0; ///< average graph edge length
+    double injectedNoiseCorrLength = 0.0; ///< GRF correlation length
 };
 
 const char* assocName(CAEFieldAssociation assoc)
@@ -204,8 +211,11 @@ void printHelp()
         << "  --list-synthetic\n"
         << "  --show-config\n"
         << "Synthetic options:\n"
-        << "  --noise=gaussian|impulse|mixed|all\n"
+        << "  --noise=gaussian|grf|impulse|mixed|all\n"
         << "  --sigma-factor=<x>\n"
+        << "  --corr-length-factor=<x>\n"
+        << "  --corr-iters=<n>\n"
+        << "  --corr-alpha=<x>\n"
         << "  --impulse-ratio=<x>\n"
         << "  --impulse-scale=<x>\n"
         << "  --seed=<n>\n"
@@ -408,6 +418,27 @@ bool parseCommandLine(int argc, char** argv, Options& opt)
             }
             continue;
         }
+        if (parseValueOption("--corr-length-factor=", value)) {
+            if (!parseFloatOption(value, opt.corrLengthFactor)) {
+                std::cerr << "invalid corr-length-factor: " << arg << std::endl;
+                return false;
+            }
+            continue;
+        }
+        if (parseValueOption("--corr-iters=", value)) {
+            if (!parsePositiveInt(value, opt.corrIters)) {
+                std::cerr << "invalid corr-iters: " << arg << std::endl;
+                return false;
+            }
+            continue;
+        }
+        if (parseValueOption("--corr-alpha=", value)) {
+            if (!parseFloatOption(value, opt.corrAlpha)) {
+                std::cerr << "invalid corr-alpha: " << arg << std::endl;
+                return false;
+            }
+            continue;
+        }
         if (parseValueOption("--impulse-ratio=", value)) {
             if (!parseFloatOption(value, opt.impulseRatio)) {
                 std::cerr << "invalid impulse-ratio: " << arg << std::endl;
@@ -430,6 +461,9 @@ bool parseCommandLine(int argc, char** argv, Options& opt)
     opt.reps = std::max(opt.reps, 1);
     opt.levels = std::clamp(opt.levels, 1, 3);
     opt.iterations = std::max(opt.iterations, 1);
+    opt.corrLengthFactor = std::max(opt.corrLengthFactor, 0.0f);
+    opt.corrIters = std::max(opt.corrIters, 0);
+    opt.corrAlpha = std::clamp(opt.corrAlpha, 0.0f, 1.0f);
     return true;
 }
 
@@ -454,10 +488,13 @@ bool shouldKeepField(const CAEFieldInfo& field, const Options& opt)
 
 std::vector<NoiseKind> resolveNoiseKinds(const Options& opt)
 {
-    // “all” 会一次生成三类噪声案例，其余模式只返回单一噪声类型。
+    // "all" runs every supported synthetic noise model.
     const std::string mode = toLower(opt.noiseMode);
     if (mode == "gaussian") {
         return { NoiseKind::Gaussian };
+    }
+    if (mode == "grf" || mode == "correlated" || mode == "correlated_gaussian") {
+        return { NoiseKind::CorrelatedGaussian };
     }
     if (mode == "impulse") {
         return { NoiseKind::Impulse };
@@ -465,7 +502,7 @@ std::vector<NoiseKind> resolveNoiseKinds(const Options& opt)
     if (mode == "mixed") {
         return { NoiseKind::Mixed };
     }
-    return { NoiseKind::Gaussian, NoiseKind::Impulse, NoiseKind::Mixed };
+    return { NoiseKind::Gaussian, NoiseKind::CorrelatedGaussian, NoiseKind::Impulse, NoiseKind::Mixed };
 }
 
 ErrorMetrics computeErrorMetrics(const std::vector<float>& values,
@@ -527,6 +564,9 @@ void printConfig(const Options& opt)
               << " storeIntermediate=" << (opt.storeIntermediate ? "ON" : "OFF")
               << " noise=" << opt.noiseMode
               << " sigmaFactor=" << opt.sigmaFactor
+              << " corrLengthFactor=" << opt.corrLengthFactor
+              << " corrIters=" << opt.corrIters
+              << " corrAlpha=" << opt.corrAlpha
               << " impulseRatio=" << opt.impulseRatio
               << " impulseScale=" << opt.impulseScale
               << " csv=" << opt.csvPath;
@@ -794,6 +834,7 @@ CaseRecord runSyntheticCase(CAEProcessingFacade& facade,
                             const std::string& datasetId,
                             const CAEDatasetSummary& summary,
                             const Options& opt,
+                            const std::vector<float>& positions,
                             const std::vector<int>& offsets,
                             const std::vector<int>& neighbors,
                             const NamedArray& clean,
@@ -818,14 +859,21 @@ CaseRecord runSyntheticCase(CAEProcessingFacade& facade,
     rec.hasCleanReference = true;
 
     const std::string noisyName = clean.name + "_noisy_" + rec.noiseTag;
-    const std::vector<float> noisy = addNoise(
+    const NoiseInjectionResult injected = injectNoise(
         clean.data,
         clean.numComponents,
         noiseKind,
         opt.sigmaFactor,
         opt.impulseRatio,
         opt.impulseScale,
+        positions,
+        offsets,
+        neighbors,
+        opt.corrLengthFactor,
+        opt.corrIters,
+        opt.corrAlpha,
         seed);
+    const std::vector<float>& noisy = injected.noisy;
 
     if (!facade.upsertArrayData(datasetId, clean.name, opt.assoc, clean.data, clean.numComponents)) {
         rec.failureReason = "failed to insert clean array";
@@ -859,6 +907,10 @@ CaseRecord runSyntheticCase(CAEProcessingFacade& facade,
     rec.cleanStd = computeStdDev(clean.data);
     rec.inputStd = computeStdDev(noisy);
     rec.fusedStd = computeStdDev(fused);
+    rec.injectedNoiseStd = injected.actualSigma;
+    rec.injectedNoiseNeighborCorr = injected.neighborCorrelation;
+    rec.injectedNoiseMeanNeighborDist = injected.meanNeighborDistance;
+    rec.injectedNoiseCorrLength = injected.corrLength;
     rec.cleanRoughness = computeGraphRoughness(clean.data, clean.numComponents, offsets, neighbors);
     rec.inputRoughness = computeGraphRoughness(noisy, clean.numComponents, offsets, neighbors);
     rec.fusedRoughness = computeGraphRoughness(fused, fusedComps, offsets, neighbors);
@@ -962,12 +1014,13 @@ bool writeCsvReport(const std::string& path,
 
     out << "dataset,association,mode,clean_array,input_array,base_array,fused_array,smooth_arrays,detail_arrays,noise,export_success,exported_vtk,components,success,failure_reason,"
            "run_mode,reps,levels,iterations,store_intermediate,spatial_sigma_factor,range_sigma_factor,level_scale,edge_sigma_factor,detail_gain0,detail_gain1,detail_gain2,"
-           "sigma_factor,impulse_ratio,impulse_scale,seed,"
+           "sigma_factor,corr_length_factor,corr_iters,corr_alpha,impulse_ratio,impulse_scale,seed,"
            "wall_avg_ms,wall_min_ms,gpu_avg_ms,gpu_min_ms,"
+           "injected_noise_std,injected_noise_neighbor_corr,injected_noise_mean_neighbor_dist,injected_noise_corr_length,"
            "has_clean_reference,clean_std,input_std,fused_std,clean_roughness,input_roughness,fused_roughness,input_to_fused_mean_abs_delta,"
            "input_error_samples,input_error_finite,input_error_nonfinite,input_mae,input_rmse,input_max_abs,input_signal_rms,input_nmae,input_nrmse,"
            "fused_error_samples,fused_error_finite,fused_error_nonfinite,fused_mae,fused_rmse,fused_max_abs,fused_signal_rms,fused_nmae,fused_nrmse,"
-           "mae_improvement_ratio,rmse_improvement_ratio,roughness_ratio\n";
+            "mae_improvement_ratio,rmse_improvement_ratio,roughness_ratio\n";
 
     for (const auto& rec : records) {
         out << csvEscape(rec.dataset) << ','
@@ -998,6 +1051,9 @@ bool writeCsvReport(const std::string& path,
             << opt.detailGain1 << ','
             << opt.detailGain2 << ','
             << opt.sigmaFactor << ','
+            << opt.corrLengthFactor << ','
+            << opt.corrIters << ','
+            << opt.corrAlpha << ','
             << opt.impulseRatio << ','
             << opt.impulseScale << ','
             << opt.seed << ','
@@ -1005,6 +1061,10 @@ bool writeCsvReport(const std::string& path,
             << rec.wallMinMs << ','
             << rec.gpuAvgMs << ','
             << rec.gpuMinMs << ','
+            << rec.injectedNoiseStd << ','
+            << rec.injectedNoiseNeighborCorr << ','
+            << rec.injectedNoiseMeanNeighborDist << ','
+            << rec.injectedNoiseCorrLength << ','
             << (rec.hasCleanReference ? "1" : "0") << ','
             << rec.cleanStd << ','
             << rec.inputStd << ','
@@ -1054,6 +1114,16 @@ void printCaseSummary(const CaseRecord& rec)
               << " wall_avg_ms=" << rec.wallAvgMs
               << " gpu_avg_ms=" << rec.gpuAvgMs
               << std::endl;
+    if (!rec.noiseTag.empty()) {
+        std::cout << "  Noise tag=" << rec.noiseTag
+                  << " std=" << rec.injectedNoiseStd
+                  << " neighbor_corr=" << rec.injectedNoiseNeighborCorr;
+        if (rec.injectedNoiseCorrLength > 0.0) {
+            std::cout << " corr_length=" << rec.injectedNoiseCorrLength
+                      << " mean_neighbor_dist=" << rec.injectedNoiseMeanNeighborDist;
+        }
+        std::cout << std::endl;
+    }
     if (!rec.baseArrayName.empty()) {
         std::cout << "  Base=" << rec.baseArrayName << std::endl;
     }
@@ -1209,6 +1279,7 @@ int main(int argc, char** argv)
                     datasetId,
                     summary,
                     opt,
+                    positions,
                     offsets,
                     neighbors,
                     selected[i],

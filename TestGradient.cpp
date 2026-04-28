@@ -51,9 +51,9 @@ enum class RunMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string file="notch_stress";
+    std::string file="hexa";
     std::string path = "Data\\"+file+".vtk";
-    CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
+    CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     std::string arrayName;
     int reps = 5;
     bool enableAnalyticBenchmarks = true;
@@ -64,7 +64,7 @@ struct Options
     bool listBenchmarks = false;
     bool showConfig = false;
     std::string nameFilter;
-    std::string csvPath = "results\\"+file+"cell.csv";
+    std::string csvPath = "results\\"+file+"point.csv";
 
     CAEGradientMethod method = CAEGradientMethod::Auto;
     bool useAdaptiveNeighborhood = true;
@@ -220,6 +220,7 @@ const char* methodName(CAEGradientMethod method)
     switch (method) {
     case CAEGradientMethod::FiniteDifference: return "fd";
     case CAEGradientMethod::AdaptiveWeightedLeastSquares: return "awls";
+    case CAEGradientMethod::ShapeFunctionDerivatives: return "shape";
     default: return "auto";
     }
 }
@@ -293,6 +294,11 @@ bool parseMethod(std::string value, CAEGradientMethod& out)
         out = CAEGradientMethod::AdaptiveWeightedLeastSquares;
         return true;
     }
+    if (value == "shape" || value == "sfd" || value == "shape-function" ||
+        value == "shapefunction" || value == "shape-function-derivatives") {
+        out = CAEGradientMethod::ShapeFunctionDerivatives;
+        return true;
+    }
     return false;
 }
 
@@ -327,7 +333,7 @@ void printHelp()
         << "  --run=single|benchmarks|fields\n"
         << "  --reference=auto|analytic|vtk|none\n"
         << "  --analytic-bench=on|off\n"
-        << "  --method=auto|fd|awls\n"
+        << "  --method=auto|fd|awls|shape   (auto: regular->fd, unstructured->shape)\n"
         << "  --adaptive-neighborhood=on|off\n"
         << "  --adaptive-dimension=on|off\n"
         << "  --adaptive-regularization=on|off\n"
@@ -610,6 +616,7 @@ ReferenceData buildAnalyticReference(CAEProcessingFacade& facade,
 ReferenceData buildVtkReference(vtkDataSet* dataset,
                                 const std::string& arrayName,
                                 CAEFieldAssociation assoc,
+                                CAEGradientMethod method,
                                 int reps)
 {
     // 当没有解析真值时，用 vtkGradientFilter 作为“工程基线”参考。
@@ -626,6 +633,10 @@ ReferenceData buildVtkReference(vtkDataSet* dataset,
         ? vtkDataObject::FIELD_ASSOCIATION_POINTS
         : vtkDataObject::FIELD_ASSOCIATION_CELLS;
     gf->SetInputArrayToProcess(0, 0, 0, vtkAssoc, arrayName.c_str());
+    if (method == CAEGradientMethod::ShapeFunctionDerivatives) {
+        gf->SetContributingCellOption(vtkGradientFilter::Patch);
+        gf->SetFasterApproximation(false);
+    }
     gf->SetInputData(dataset);
 
     double sumMs = 0.0;
@@ -672,6 +683,7 @@ ReferenceData resolveReference(CAEProcessingFacade& facade,
                                vtkDataSet* vtkDataset,
                                const std::string& arrayName,
                                CAEFieldAssociation assoc,
+                               CAEGradientMethod method,
                                ReferenceMode mode,
                                int reps)
 {
@@ -684,14 +696,14 @@ ReferenceData resolveReference(CAEProcessingFacade& facade,
         return buildAnalyticReference(facade, datasetId, arrayName, assoc);
     }
     if (mode == ReferenceMode::Vtk) {
-        return buildVtkReference(vtkDataset, arrayName, assoc, reps);
+        return buildVtkReference(vtkDataset, arrayName, assoc, method, reps);
     }
 
     ReferenceData analytic = buildAnalyticReference(facade, datasetId, arrayName, assoc);
     if (analytic.available) {
         return analytic;
     }
-    return buildVtkReference(vtkDataset, arrayName, assoc, reps);
+    return buildVtkReference(vtkDataset, arrayName, assoc, method, reps);
 }
 
 CompareMetrics compareGradients(const std::vector<float>& result,
@@ -1255,6 +1267,13 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
     req.lineEigenRatio = opt.lineEigenRatio;
     req.lambdaAmplify = opt.lambdaAmplify;
 
+    CAEGradientMethod effectiveMethod = req.method;
+    if (effectiveMethod == CAEGradientMethod::Auto) {
+        effectiveMethod = (summary.gridClass == CAEGridClass::Regular)
+            ? CAEGradientMethod::FiniteDifference
+            : CAEGradientMethod::ShapeFunctionDerivatives;
+    }
+
     double wallSum = 0.0;
     double wallMin = std::numeric_limits<double>::max();
     double gpuSum = 0.0;
@@ -1282,7 +1301,7 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
     }
 
     ReferenceData ref = resolveReference(
-        facade, datasetId, vtkDataset, field.name, opt.assoc, opt.referenceMode, opt.reps);
+        facade, datasetId, vtkDataset, field.name, opt.assoc, effectiveMethod, opt.referenceMode, opt.reps);
     if (opt.referenceMode != ReferenceMode::Auto &&
         opt.referenceMode != ReferenceMode::None &&
         !ref.available) {

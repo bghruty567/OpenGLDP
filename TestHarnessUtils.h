@@ -898,6 +898,7 @@ inline std::vector<NamedArray> buildSyntheticScalarFields(const std::vector<floa
 enum class NoiseKind
 {
     Gaussian,
+    CorrelatedGaussian,
     Impulse,
     Mixed
 };
@@ -906,6 +907,8 @@ enum class NoiseKind
 inline const char* noiseKindTag(NoiseKind kind)
 {
     switch (kind) {
+    case NoiseKind::CorrelatedGaussian:
+        return "grf";
     case NoiseKind::Impulse:
         return "impulse";
     case NoiseKind::Mixed:
@@ -915,46 +918,303 @@ inline const char* noiseKindTag(NoiseKind kind)
     }
 }
 
-/// 按给定策略向干净字段中注入噪声。
-///
-/// 参数含义：
-/// - `sigmaFactor`：高斯噪声标准差，相对于信号标准差；
-/// - `impulseRatio`：脉冲噪声出现概率；
-/// - `impulseScale`：脉冲噪声幅值，相对于信号标准差。
-inline std::vector<float> addNoise(const std::vector<float>& clean,
-                                   int numComponents,
-                                   NoiseKind kind,
-                                   double sigmaFactor,
-                                   double impulseRatio,
-                                   double impulseScale,
-                                   std::uint32_t seed)
+struct NoiseInjectionResult
 {
-    std::vector<float> noisy = clean;
-    if (clean.empty() || numComponents <= 0) {
-        return noisy;
+    std::vector<float> noisy;
+    std::vector<float> noise;
+    double signalStd = 0.0;
+    double targetSigma = 0.0;
+    double actualSigma = 0.0;
+    double meanNeighborDistance = 0.0;
+    double corrLength = 0.0;
+    double neighborCorrelation = 0.0;
+};
+
+inline double computeMeanNeighborDistance(const std::vector<float>& positions,
+                                          const std::vector<int>& offsets,
+                                          const std::vector<int>& neighbors)
+{
+    if (positions.empty() || offsets.size() < 2) {
+        return 0.0;
     }
 
-    const double signalStd = std::max(computeStdDev(clean), 1e-6);
-    const double sigma = std::max(0.0, sigmaFactor) * signalStd;
-    const double impulseAmp = std::max(impulseScale, 0.0) * signalStd;
+    const size_t tupleCount = positions.size() / 3u;
+    double sum = 0.0;
+    size_t count = 0;
+    for (size_t i = 0; i < tupleCount; ++i) {
+        const size_t pi = i * 3u;
+        for (int k = offsets[i]; k < offsets[i + 1]; ++k) {
+            const int j = neighbors[static_cast<size_t>(k)];
+            if (j < 0 || static_cast<size_t>(j) >= tupleCount || static_cast<size_t>(j) <= i) {
+                continue;
+            }
 
-    std::mt19937 rng(seed);
-    std::normal_distribution<double> gauss(0.0, sigma);
-    std::uniform_real_distribution<double> unit(0.0, 1.0);
-    std::uniform_real_distribution<double> sign(-1.0, 1.0);
-
-    for (size_t i = 0; i < noisy.size(); ++i) {
-        double value = static_cast<double>(clean[i]);
-        if (kind == NoiseKind::Gaussian || kind == NoiseKind::Mixed) {
-            value += gauss(rng);
+            const size_t pj = static_cast<size_t>(j) * 3u;
+            const double dx = static_cast<double>(positions[pi]) - static_cast<double>(positions[pj]);
+            const double dy = static_cast<double>(positions[pi + 1]) - static_cast<double>(positions[pj + 1]);
+            const double dz = static_cast<double>(positions[pi + 2]) - static_cast<double>(positions[pj + 2]);
+            sum += std::sqrt(dx * dx + dy * dy + dz * dz);
+            ++count;
         }
-        if (kind == NoiseKind::Impulse || kind == NoiseKind::Mixed) {
-            if (unit(rng) < impulseRatio) {
-                value += impulseAmp * (sign(rng) >= 0.0 ? 1.0 : -1.0);
+    }
+
+    if (count == 0) {
+        return 0.0;
+    }
+    return sum / static_cast<double>(count);
+}
+
+inline double computeNeighborCorrelation(const std::vector<float>& values,
+                                         int numComponents,
+                                         const std::vector<int>& offsets,
+                                         const std::vector<int>& neighbors)
+{
+    if (values.empty() || numComponents <= 0 || offsets.size() < 2) {
+        return 0.0;
+    }
+
+    const size_t tupleCount = values.size() / static_cast<size_t>(numComponents);
+    if (tupleCount == 0 || offsets.size() != tupleCount + 1u) {
+        return 0.0;
+    }
+
+    std::vector<double> means(static_cast<size_t>(numComponents), 0.0);
+    for (size_t i = 0; i < tupleCount; ++i) {
+        const size_t base = i * static_cast<size_t>(numComponents);
+        for (int c = 0; c < numComponents; ++c) {
+            means[static_cast<size_t>(c)] += static_cast<double>(values[base + static_cast<size_t>(c)]);
+        }
+    }
+    for (double& mean : means) {
+        mean /= static_cast<double>(tupleCount);
+    }
+
+    double covariance = 0.0;
+    double variance = 0.0;
+    for (size_t i = 0; i < tupleCount; ++i) {
+        const size_t baseI = i * static_cast<size_t>(numComponents);
+        for (int k = offsets[i]; k < offsets[i + 1]; ++k) {
+            const int j = neighbors[static_cast<size_t>(k)];
+            if (j < 0 || static_cast<size_t>(j) >= tupleCount || static_cast<size_t>(j) <= i) {
+                continue;
+            }
+
+            const size_t baseJ = static_cast<size_t>(j) * static_cast<size_t>(numComponents);
+            for (int c = 0; c < numComponents; ++c) {
+                const double mean = means[static_cast<size_t>(c)];
+                const double di = static_cast<double>(values[baseI + static_cast<size_t>(c)]) - mean;
+                const double dj = static_cast<double>(values[baseJ + static_cast<size_t>(c)]) - mean;
+                covariance += di * dj;
+                variance += 0.5 * (di * di + dj * dj);
             }
         }
-        noisy[i] = static_cast<float>(value);
     }
-    return noisy;
+
+    if (variance <= 1e-20) {
+        return 0.0;
+    }
+    return covariance / variance;
+}
+
+inline void addWhiteGaussianNoise(std::vector<float>& noise,
+                                  double sigma,
+                                  std::mt19937& rng)
+{
+    if (noise.empty() || sigma <= 0.0) {
+        return;
+    }
+
+    std::normal_distribution<double> gauss(0.0, sigma);
+    for (float& value : noise) {
+        value += static_cast<float>(gauss(rng));
+    }
+}
+
+inline void addImpulseNoise(std::vector<float>& noise,
+                            double impulseRatio,
+                            double impulseAmplitude,
+                            std::mt19937& rng)
+{
+    if (noise.empty() || impulseRatio <= 0.0 || impulseAmplitude <= 0.0) {
+        return;
+    }
+
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    std::uniform_real_distribution<double> sign(-1.0, 1.0);
+    for (float& value : noise) {
+        if (unit(rng) < impulseRatio) {
+            value += static_cast<float>(impulseAmplitude * (sign(rng) >= 0.0 ? 1.0 : -1.0));
+        }
+    }
+}
+
+inline void addCorrelatedGaussianNoise(std::vector<float>& noise,
+                                       int numComponents,
+                                       double sigma,
+                                       const std::vector<float>& positions,
+                                       const std::vector<int>& offsets,
+                                       const std::vector<int>& neighbors,
+                                       double corrLengthFactor,
+                                       int corrIters,
+                                       double corrAlpha,
+                                       std::mt19937& rng,
+                                       double& outMeanNeighborDistance,
+                                       double& outCorrLength)
+{
+    if (noise.empty() || numComponents <= 0 || sigma <= 0.0) {
+        return;
+    }
+
+    const size_t tupleCount = noise.size() / static_cast<size_t>(numComponents);
+    if (tupleCount == 0) {
+        return;
+    }
+
+    std::vector<double> field(noise.size(), 0.0);
+    std::normal_distribution<double> gauss(0.0, 1.0);
+    for (double& value : field) {
+        value = gauss(rng);
+    }
+
+    const bool graphReady =
+        positions.size() == tupleCount * 3u &&
+        offsets.size() == tupleCount + 1u &&
+        !neighbors.empty();
+    outMeanNeighborDistance = graphReady
+        ? computeMeanNeighborDistance(positions, offsets, neighbors)
+        : 0.0;
+
+    corrIters = std::max(corrIters, 0);
+    corrAlpha = std::min(std::max(corrAlpha, 0.0), 1.0);
+    outCorrLength = (graphReady && corrIters > 0 && corrAlpha > 0.0)
+        ? std::max(corrLengthFactor, 1e-6) * std::max(outMeanNeighborDistance, 1e-6)
+        : 0.0;
+    if (graphReady && corrIters > 0 && corrAlpha > 0.0 && outCorrLength > 0.0) {
+        const double invTwoLengthSq = 1.0 / (2.0 * outCorrLength * outCorrLength);
+        std::vector<double> next(field.size(), 0.0);
+        std::vector<double> weighted(static_cast<size_t>(numComponents), 0.0);
+
+        for (int iter = 0; iter < corrIters; ++iter) {
+            for (size_t i = 0; i < tupleCount; ++i) {
+                std::fill(weighted.begin(), weighted.end(), 0.0);
+                double weightSum = 0.0;
+
+                const size_t baseI = i * static_cast<size_t>(numComponents);
+                const size_t pi = i * 3u;
+                for (int k = offsets[i]; k < offsets[i + 1]; ++k) {
+                    const int j = neighbors[static_cast<size_t>(k)];
+                    if (j < 0 || static_cast<size_t>(j) >= tupleCount || static_cast<size_t>(j) == i) {
+                        continue;
+                    }
+
+                    const size_t pj = static_cast<size_t>(j) * 3u;
+                    const double dx = static_cast<double>(positions[pi]) - static_cast<double>(positions[pj]);
+                    const double dy = static_cast<double>(positions[pi + 1]) - static_cast<double>(positions[pj + 1]);
+                    const double dz = static_cast<double>(positions[pi + 2]) - static_cast<double>(positions[pj + 2]);
+                    const double distSq = dx * dx + dy * dy + dz * dz;
+                    const double weight = std::exp(-distSq * invTwoLengthSq);
+                    weightSum += weight;
+
+                    const size_t baseJ = static_cast<size_t>(j) * static_cast<size_t>(numComponents);
+                    for (int c = 0; c < numComponents; ++c) {
+                        weighted[static_cast<size_t>(c)] +=
+                            weight * field[baseJ + static_cast<size_t>(c)];
+                    }
+                }
+
+                for (int c = 0; c < numComponents; ++c) {
+                    const size_t idx = baseI + static_cast<size_t>(c);
+                    if (weightSum > 1e-20) {
+                        const double neighborMean = weighted[static_cast<size_t>(c)] / weightSum;
+                        next[idx] = (1.0 - corrAlpha) * field[idx] + corrAlpha * neighborMean;
+                    } else {
+                        next[idx] = field[idx];
+                    }
+                }
+            }
+            field.swap(next);
+        }
+    }
+
+    for (int c = 0; c < numComponents; ++c) {
+        double mean = 0.0;
+        for (size_t i = 0; i < tupleCount; ++i) {
+            mean += field[i * static_cast<size_t>(numComponents) + static_cast<size_t>(c)];
+        }
+        mean /= static_cast<double>(tupleCount);
+
+        double variance = 0.0;
+        for (size_t i = 0; i < tupleCount; ++i) {
+            const size_t idx = i * static_cast<size_t>(numComponents) + static_cast<size_t>(c);
+            field[idx] -= mean;
+            variance += field[idx] * field[idx];
+        }
+
+        const double stddev = std::sqrt(variance / static_cast<double>(tupleCount));
+        const double scale = stddev > 1e-20 ? (sigma / stddev) : 0.0;
+        for (size_t i = 0; i < tupleCount; ++i) {
+            const size_t idx = i * static_cast<size_t>(numComponents) + static_cast<size_t>(c);
+            noise[idx] += static_cast<float>(field[idx] * scale);
+        }
+    }
+}
+
+/// Inject noise into a clean field for synthetic tests.
+inline NoiseInjectionResult injectNoise(const std::vector<float>& clean,
+                                        int numComponents,
+                                        NoiseKind kind,
+                                        double sigmaFactor,
+                                        double impulseRatio,
+                                        double impulseScale,
+                                        const std::vector<float>& positions,
+                                        const std::vector<int>& offsets,
+                                        const std::vector<int>& neighbors,
+                                        double corrLengthFactor,
+                                        int corrIters,
+                                        double corrAlpha,
+                                        std::uint32_t seed)
+{
+    NoiseInjectionResult result;
+    result.noisy = clean;
+    result.noise.assign(clean.size(), 0.0f);
+    if (clean.empty() || numComponents <= 0) {
+        return result;
+    }
+
+    result.signalStd = std::max(computeStdDev(clean), 1e-6);
+    result.targetSigma = std::max(0.0, sigmaFactor) * result.signalStd;
+    const double impulseAmp = std::max(impulseScale, 0.0) * result.signalStd;
+
+    std::mt19937 rng(seed);
+    if (kind == NoiseKind::Gaussian || kind == NoiseKind::Mixed) {
+        addWhiteGaussianNoise(result.noise, result.targetSigma, rng);
+    } else if (kind == NoiseKind::CorrelatedGaussian) {
+        addCorrelatedGaussianNoise(result.noise,
+                                   numComponents,
+                                   result.targetSigma,
+                                   positions,
+                                   offsets,
+                                   neighbors,
+                                   corrLengthFactor,
+                                   corrIters,
+                                   corrAlpha,
+                                   rng,
+                                   result.meanNeighborDistance,
+                                   result.corrLength);
+    }
+
+    if (kind == NoiseKind::Impulse || kind == NoiseKind::Mixed) {
+        addImpulseNoise(result.noise, impulseRatio, impulseAmp, rng);
+    }
+
+    for (size_t i = 0; i < clean.size(); ++i) {
+        result.noisy[i] = clean[i] + result.noise[i];
+    }
+    result.actualSigma = computeStdDev(result.noise);
+    result.neighborCorrelation = computeNeighborCorrelation(result.noise,
+                                                            numComponents,
+                                                            offsets,
+                                                            neighbors);
+    return result;
 }
 }

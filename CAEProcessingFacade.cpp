@@ -1441,7 +1441,7 @@ bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
         if (rec.data.gridType == DATA_OBJECT_TYPE_RegularGrid) {
             method = CAEGradientMethod::FiniteDifference;
         } else {
-            method = CAEGradientMethod::AdaptiveWeightedLeastSquares;
+            method = CAEGradientMethod::ShapeFunctionDerivatives;
         }
     }
     if (rec.data.gridType == DATA_OBJECT_TYPE_RegularGrid &&
@@ -1464,6 +1464,8 @@ bool CAEProcessingFacade::computeGradient(const CAEGradientRequest& req,
     auto t0 = std::chrono::high_resolution_clock::now();
     if (method == CAEGradientMethod::FiniteDifference) {
         ok = computeByFD(rec, *src, grad);
+    } else if (method == CAEGradientMethod::ShapeFunctionDerivatives) {
+        ok = computeByShapeFunction(rec, *src, req, grad);
     } else {
         ok = computeByAdaptiveWLS(rec, *src, req, grad);
     }
@@ -1795,6 +1797,8 @@ std::string CAEProcessingFacade::makeResultName(const std::string& src, CAEField
     std::string m = "AWLS";
     if (method == CAEGradientMethod::FiniteDifference) {
         m = "FD";
+    } else if (method == CAEGradientMethod::ShapeFunctionDerivatives) {
+        m = "SFD";
     }
     return src + "_grad_" + a + "_" + m;
 }
@@ -1831,6 +1835,45 @@ bool CAEProcessingFacade::computeByFD(DatasetRecord& rec, const DataArray& src, 
     }
 
     const bool ok = m_engine.computeRegularFD(positions, src.data, p, outGrad);
+    if (ok) {
+        m_lastComputeGpuMs = m_engine.getLastGpuTimeMs();
+    }
+    return ok;
+}
+
+bool CAEProcessingFacade::computeByShapeFunction(DatasetRecord& rec,
+                                                 const DataArray& src,
+                                                 const CAEGradientRequest& req,
+                                                 std::vector<float>& outGrad)
+{
+    if (rec.data.gridType != DATA_OBJECT_TYPE_UNSTRUCTURED ||
+        !gradientAssociationMatchesArray(src, req.association)) {
+        return false;
+    }
+
+    bool ok = false;
+    if (req.association == CAEFieldAssociation::Point) {
+        ok = m_engine.computeUnstructuredShapeFunctionPoint(
+            rec.data.points,
+            rec.data.cellOffsets,
+            rec.data.cells,
+            rec.data.cellTypes,
+            rec.data.pointInCellNeighborOffsets,
+            rec.data.pointInCellNeighbors,
+            src.data,
+            outGrad);
+    } else {
+        ok = m_engine.computeUnstructuredShapeFunctionCell(
+            rec.data.points,
+            rec.data.cellOffsets,
+            rec.data.cells,
+            rec.data.cellTypes,
+            rec.data.pointInCellNeighborOffsets,
+            rec.data.pointInCellNeighbors,
+            src.data,
+            outGrad);
+    }
+
     if (ok) {
         m_lastComputeGpuMs = m_engine.getLastGpuTimeMs();
     }

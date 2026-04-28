@@ -127,6 +127,14 @@ target_link_libraries(opengldp_multiscale_test PRIVATE
     opengldp_core
 )
 
+add_executable(opengldp_field_metrics
+    TestFieldMetrics.cpp
+)
+
+target_link_libraries(opengldp_field_metrics PRIVATE
+    opengldp_core
+)
+
 add_custom_command(TARGET opengldp_gui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Shaders
@@ -154,9 +162,15 @@ add_custom_command(TARGET opengldp_multiscale_test POST_BUILD
             $<TARGET_FILE_DIR:opengldp_multiscale_test>/Data
 )
 
+add_custom_command(TARGET opengldp_field_metrics POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Data
+            $<TARGET_FILE_DIR:opengldp_field_metrics>/Data
+)
+
 
 vtk_module_autoinit(
-    TARGETS opengldp_gui opengldp_benchmark opengldp_multiscale_test
+    TARGETS opengldp_gui opengldp_benchmark opengldp_multiscale_test opengldp_field_metrics
     MODULES ${OPENGDP_VTK_LIBS}
 )
 
