@@ -51,9 +51,9 @@ enum class RunMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string file="hexa";
+    std::string file="SampleStructGrid";
     std::string path = "Data\\"+file+".vtk";
-    CAEFieldAssociation assoc = CAEFieldAssociation::Point;
+    CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     std::string arrayName;
     int reps = 5;
     bool enableAnalyticBenchmarks = true;
@@ -64,7 +64,7 @@ struct Options
     bool listBenchmarks = false;
     bool showConfig = false;
     std::string nameFilter;
-    std::string csvPath = "results\\"+file+"point.csv";
+    std::string csvPath = "results\\"+file+"cell.csv";
 
     CAEGradientMethod method = CAEGradientMethod::Auto;
     bool useAdaptiveNeighborhood = true;
