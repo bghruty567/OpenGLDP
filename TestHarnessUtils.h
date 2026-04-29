@@ -604,6 +604,11 @@ struct GeometryAnalysis
     int topologicalDim = 3;
     int globalGeometricDim = 3;
     bool surfaceLike = false;
+    std::array<float, 9> globalFrame{
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f
+    };
     std::vector<float> positions;
     std::vector<int> offsets;
     std::vector<int> neighbors;
@@ -684,6 +689,7 @@ inline GeometryAnalysis analyzeGeometry(const DataObject& data,
     eigenSymmetric3(cov, globalFrame);
     out.globalGeometricDim = inferGeometricDimensionFromEigenvalues(
         globalFrame.eigenValues, planeEigenRatio, lineEigenRatio);
+    out.globalFrame = globalFrame.frame;
     out.globalEigenRatios = {
         globalFrame.eigenValues[0] > kGeomEps ? globalFrame.eigenValues[1] / globalFrame.eigenValues[0] : 0.0,
         globalFrame.eigenValues[0] > kGeomEps ? globalFrame.eigenValues[2] / globalFrame.eigenValues[0] : 0.0,

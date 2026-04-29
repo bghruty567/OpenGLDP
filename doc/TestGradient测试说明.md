@@ -20,7 +20,7 @@
 
 ## 3. 运行模式
 
-当前支持三种模式：
+当前支持三种 `run` 模式，并可通过 `--result` 切换被评估结果来源：
 
 ### 3.1 `single`
 
@@ -46,6 +46,22 @@ opengldp_benchmark --dataset=Data\AngularSector.vtk --assoc=cell --run=benchmark
 opengldp_benchmark --dataset=Data\ShipHull_0.vtk --assoc=point --run=fields --reference=vtk --analytic-bench=off --csv=results\ship_point_fields.csv
 ```
 
+### 3.4 `VTK -> analytic` 对照
+
+如果要专门检查“VTK 在解析场上是不是也有同样的问题”，现在可以把被评估结果切换为 VTK：
+
+```text
+opengldp_benchmark --dataset=Data\ShipHull_0.vtk --assoc=cell --run=benchmarks --result=vtk --reference=analytic --csv=results\ship_cell_vtk_vs_analytic.csv
+```
+
+这个模式下：
+
+- 被评估结果来自 `vtkGradientFilter`；
+- 参考值来自 `*_exact_grad`；
+- 控制台和 CSV 会把 `result_source` 标成 `vtk`；
+- `result_wall_*` 记录的是 VTK 结果的时间；
+- `result_gpu_*` 为 `0`，因为该模式不走 OpenGL 计算。
+
 ## 4. 核心参数
 
 | 参数 | 默认值 | 说明 |
@@ -54,6 +70,7 @@ opengldp_benchmark --dataset=Data\ShipHull_0.vtk --assoc=point --run=fields --re
 | `--assoc` | `point` | 选择点数据或单元数据 |
 | `--array` | 空 | 单案例模式下指定字段 |
 | `--reps` | `5` | 重复次数 |
+| `--result` | `gl` | 被评估结果来源：系统 OpenGL 结果或 VTK 结果 |
 | `--reference` | `auto` | 参考优先级：解析梯度优先，缺失时退到 VTK |
 | `--analytic-bench` | `on` | 是否注入解析 benchmark |
 | `--dump` | `20` | 单案例打印样本数 |
@@ -105,6 +122,20 @@ benchmark 会同时注入到：
 - 做真实数据工程对照时用 `vtk`；
 - 做批量日常测试时用 `auto`。
 
+## 6.1 被评估结果来源
+
+除参考模式外，程序现在还支持切换“被评估结果是谁算出来的”：
+
+- `--result=gl`  
+  评估本系统 OpenGL 路径的结果，这是默认模式。
+- `--result=vtk`  
+  评估 `vtkGradientFilter` 的结果，常用于回答“VTK 在解析场上是否也会出现同类误差”。
+
+注意：
+
+- `--result=vtk` 时，不允许再配 `--reference=vtk`，因为那会变成 VTK 对 VTK 自比。
+- `--result=vtk --reference=auto` 时，程序只会接受解析真值；若当前字段没有 `*_exact_grad`，案例会直接报参考缺失，而不会退回到 VTK 自己。
+
 ## 7. 输出指标
 
 ### 7.1 绝对误差
@@ -151,6 +182,8 @@ benchmark 会同时注入到：
 - 数据集；
 - 点/单元关联；
 - 字段名；
+- 结果来源 `result_source`；
+- 通用结果时间 `result_wall_*` / `result_gpu_*`；
 - 输入/输出分量数；
 - OpenGL 计时；
 - 参考来源；
@@ -204,6 +237,17 @@ opengldp_benchmark --dataset=Data\AngularSector.vtk --assoc=cell --array=benchma
 目的：
 
 - 直接看样本级输出和局部误差表现。
+
+### 9.5 模板 E：检查 VTK 在解析场上的表现
+
+```text
+opengldp_benchmark --dataset=Data\ShipHull_0.vtk --assoc=point --run=benchmarks --result=vtk --reference=analytic --csv=results\ship_point_vtk_vs_analytic.csv
+```
+
+目的：
+
+- 将“系统结果对解析真值”和“VTK 结果对解析真值”放到同一指标体系下；
+- 判断解析场误差是系统特有问题，还是 VTK 在该数据/口径下也会暴露类似现象。
 
 ## 10. 结果解释建议
 

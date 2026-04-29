@@ -5,9 +5,11 @@
 #include <vtkGradientFilter.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
+#include <vtkSMPTools.h>
 #include <vtkSmartPointer.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -35,11 +37,27 @@ enum class ReferenceMode
     None
 };
 
+enum class ResultSource
+{
+    Gl,
+    Vtk
+};
+
 enum class RunMode
 {
     Single,
     Benchmarks,
     Fields
+};
+
+enum class VtkBackendMode
+{
+    Auto,
+    Current,
+    Sequential,
+    StdThread,
+    OpenMP,
+    TBB
 };
 
 // 命令行配置集合。
@@ -51,13 +69,14 @@ enum class RunMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string file="SampleStructGrid";
+    std::string file="ShipHull_0";
     std::string path = "Data\\"+file+".vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     std::string arrayName;
     int reps = 5;
     bool enableAnalyticBenchmarks = true;
     ReferenceMode referenceMode = ReferenceMode::Auto;
+    ResultSource resultSource = ResultSource::Gl;
     int maxSamplesToPrint = 12;
     RunMode runMode = RunMode::Fields;
     bool listFields = false;
@@ -65,6 +84,8 @@ struct Options
     bool showConfig = false;
     std::string nameFilter;
     std::string csvPath = "results\\"+file+"cell.csv";
+    int vtkParallelThreads = 0;
+    VtkBackendMode vtkBackendMode = VtkBackendMode::Auto;
 
     CAEGradientMethod method = CAEGradientMethod::Auto;
     bool useAdaptiveNeighborhood = true;
@@ -94,6 +115,15 @@ struct ReferenceData
     int comps = 0;                  ///< 参考梯度每个 tuple 的分量数
     double timeAvgMs = 0.0;         ///< 参考方法平均耗时
     double timeMinMs = 0.0;         ///< 参考方法最小耗时
+    bool vtkParallelInfoAvailable = false; ///< 是否携带 VTK SMP 计时信息
+    std::string vtkBackend;         ///< VTK SMP backend
+    int vtkSingleThreads = 0;       ///< VTK 单线程估计线程数
+    int vtkParallelThreads = 0;     ///< VTK 并行估计线程数
+    int vtkRequestedParallelThreads = 0; ///< 请求的 VTK 并行线程数
+    double vtkSingleAvgMs = 0.0;    ///< VTK 单线程平均耗时
+    double vtkSingleMinMs = 0.0;    ///< VTK 单线程最小耗时
+    double vtkParallelAvgMs = 0.0;  ///< VTK 并行平均耗时
+    double vtkParallelMinMs = 0.0;  ///< VTK 并行最小耗时
 };
 
 // 梯度对比时汇总的误差指标。
@@ -148,6 +178,24 @@ struct CompareMetrics
 
     double refTimeAvgMs = 0.0;      ///< 参考方法平均耗时
     double refTimeMinMs = 0.0;      ///< 参考方法最小耗时
+    bool vtkParallelInfoAvailable = false; ///< 当前参考是否包含 VTK 并行信息
+    std::string vtkBackend;         ///< VTK SMP backend
+    int vtkSingleThreads = 0;       ///< VTK 单线程估计线程数
+    int vtkParallelThreads = 0;     ///< VTK 并行估计线程数
+    int vtkRequestedParallelThreads = 0; ///< 请求的 VTK 并行线程数
+    double vtkSingleAvgMs = 0.0;    ///< VTK 单线程平均耗时
+    double vtkSingleMinMs = 0.0;    ///< VTK 单线程最小耗时
+    double vtkParallelAvgMs = 0.0;  ///< VTK 并行平均耗时
+    double vtkParallelMinMs = 0.0;  ///< VTK 并行最小耗时
+};
+
+struct VtkTimingStats
+{
+    bool available = false;
+    std::string backend;
+    int estimatedThreads = 0;
+    double avgMs = 0.0;
+    double minMs = 0.0;
 };
 
 // 几何分析的摘要结果。
@@ -177,9 +225,14 @@ struct CaseRecord
     std::string dataset;            ///< 数据集显示名
     std::string association;        ///< POINT 或 CELL
     std::string arrayName;          ///< 当前测试字段名
+    std::string resultSource;       ///< 当前被评估结果来自 GL 还是 VTK
     int inputComponents = 0;        ///< 输入字段分量数
     bool success = false;           ///< 当前案例是否执行成功
     std::string failureReason;      ///< 失败原因
+    double resultWallAvgMs = 0.0;   ///< 当前被评估结果的平均墙钟时间
+    double resultWallMinMs = 0.0;   ///< 当前被评估结果的最小墙钟时间
+    double resultGpuAvgMs = 0.0;    ///< 当前被评估结果的平均 GPU 时间；VTK 模式下为 0
+    double resultGpuMinMs = 0.0;    ///< 当前被评估结果的最小 GPU 时间；VTK 模式下为 0
     double glWallAvgMs = 0.0;       ///< 本方法平均墙钟时间
     double glWallMinMs = 0.0;       ///< 本方法最小墙钟时间
     double glGpuAvgMs = 0.0;        ///< 本方法平均 GPU 时间
@@ -206,12 +259,32 @@ const char* referenceModeName(ReferenceMode mode)
     }
 }
 
+const char* resultSourceName(ResultSource source)
+{
+    switch (source) {
+    case ResultSource::Vtk: return "vtk";
+    default: return "gl";
+    }
+}
+
 const char* runModeName(RunMode mode)
 {
     switch (mode) {
     case RunMode::Benchmarks: return "benchmarks";
     case RunMode::Fields: return "fields";
     default: return "single";
+    }
+}
+
+const char* vtkBackendModeName(VtkBackendMode mode)
+{
+    switch (mode) {
+    case VtkBackendMode::Current: return "current";
+    case VtkBackendMode::Sequential: return "sequential";
+    case VtkBackendMode::StdThread: return "stdthread";
+    case VtkBackendMode::OpenMP: return "openmp";
+    case VtkBackendMode::TBB: return "tbb";
+    default: return "auto";
     }
 }
 
@@ -279,6 +352,50 @@ bool parseRunMode(std::string value, RunMode& out)
     return false;
 }
 
+bool parseResultSource(std::string value, ResultSource& out)
+{
+    value = toLower(std::move(value));
+    if (value == "gl" || value == "gpu" || value == "system") {
+        out = ResultSource::Gl;
+        return true;
+    }
+    if (value == "vtk" || value == "cpu-vtk") {
+        out = ResultSource::Vtk;
+        return true;
+    }
+    return false;
+}
+
+bool parseVtkBackendMode(std::string value, VtkBackendMode& out)
+{
+    value = toLower(std::move(value));
+    if (value == "auto") {
+        out = VtkBackendMode::Auto;
+        return true;
+    }
+    if (value == "current" || value == "default") {
+        out = VtkBackendMode::Current;
+        return true;
+    }
+    if (value == "sequential" || value == "seq") {
+        out = VtkBackendMode::Sequential;
+        return true;
+    }
+    if (value == "stdthread" || value == "std" || value == "thread") {
+        out = VtkBackendMode::StdThread;
+        return true;
+    }
+    if (value == "openmp" || value == "omp") {
+        out = VtkBackendMode::OpenMP;
+        return true;
+    }
+    if (value == "tbb") {
+        out = VtkBackendMode::TBB;
+        return true;
+    }
+    return false;
+}
+
 bool parseMethod(std::string value, CAEGradientMethod& out)
 {
     value = toLower(std::move(value));
@@ -318,6 +435,18 @@ bool parseFloatOption(const std::string& value, float& out)
     return true;
 }
 
+bool parseNonNegativeInt(const std::string& value, int& out)
+{
+    char* endPtr = nullptr;
+    const long parsed = std::strtol(value.c_str(), &endPtr, 10);
+    if (!endPtr || *endPtr != '\0' || parsed < 0 ||
+        parsed > static_cast<long>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    out = static_cast<int>(parsed);
+    return true;
+}
+
 void printHelp()
 {
     // 这份帮助文本基本覆盖了 TestGradient 的全部实验入口。
@@ -331,6 +460,7 @@ void printHelp()
         << "  --array=<name>\n"
         << "  --reps=<n>\n"
         << "  --run=single|benchmarks|fields\n"
+        << "  --result=gl|vtk\n"
         << "  --reference=auto|analytic|vtk|none\n"
         << "  --analytic-bench=on|off\n"
         << "  --method=auto|fd|awls|shape   (auto: regular->fd, unstructured->shape)\n"
@@ -347,6 +477,8 @@ void printHelp()
         << "  --dump=<n>\n"
         << "  --filter=<text>\n"
         << "  --csv=<path>\n"
+        << "  --vtk-backend=auto|current|sequential|stdthread|openmp|tbb\n"
+        << "  --vtk-parallel-threads=<n>\n"
         << "  --list-fields\n"
         << "  --list-benchmarks\n"
         << "  --show-config\n"
@@ -460,6 +592,14 @@ bool parseCommandLine(int argc, char** argv, Options& opt)
             }
             continue;
         }
+        if (parseValueOption("--result=", value) || parseValueOption("--subject=", value) ||
+            parseValueOption("--source=", value)) {
+            if (!parseResultSource(value, opt.resultSource)) {
+                std::cerr << "invalid result source: " << arg << std::endl;
+                return false;
+            }
+            continue;
+        }
         if (parseValueOption("--run=", value) || parseValueOption("run=", value)) {
             if (!parseRunMode(value, opt.runMode)) {
                 std::cerr << "invalid run mode: " << arg << std::endl;
@@ -473,6 +613,26 @@ bool parseCommandLine(int argc, char** argv, Options& opt)
         }
         if (parseValueOption("--csv=", value) || parseValueOption("csv=", value)) {
             opt.csvPath = value;
+            continue;
+        }
+        if (parseValueOption("--vtk-parallel-threads=", value) ||
+            parseValueOption("--vtk-threads=", value) ||
+            parseValueOption("vtk-parallel-threads=", value) ||
+            parseValueOption("vtk-threads=", value)) {
+            if (!parseNonNegativeInt(value, opt.vtkParallelThreads)) {
+                std::cerr << "invalid vtk parallel threads: " << arg << std::endl;
+                return false;
+            }
+            continue;
+        }
+        if (parseValueOption("--vtk-backend=", value) ||
+            parseValueOption("--vtk-smp-backend=", value) ||
+            parseValueOption("vtk-backend=", value) ||
+            parseValueOption("vtk-smp-backend=", value)) {
+            if (!parseVtkBackendMode(value, opt.vtkBackendMode)) {
+                std::cerr << "invalid vtk backend: " << arg << std::endl;
+                return false;
+            }
             continue;
         }
         if (parseValueOption("--method=", value) || parseValueOption("method=", value)) {
@@ -584,6 +744,234 @@ bool isBenchmarkInputArray(const std::string& name)
     return startsWith(name, "benchmark_") && !isExactGradientArray(name);
 }
 
+std::string currentVtkBackend()
+{
+    const char* backend = vtkSMPTools::GetBackend();
+    return backend ? std::string(backend) : std::string("UNKNOWN");
+}
+
+std::string canonicalVtkBackendName(VtkBackendMode mode)
+{
+    switch (mode) {
+    case VtkBackendMode::Sequential: return "Sequential";
+    case VtkBackendMode::StdThread: return "STDThread";
+    case VtkBackendMode::OpenMP: return "OpenMP";
+    case VtkBackendMode::TBB: return "TBB";
+    default: return std::string();
+    }
+}
+
+std::string resolveVtkTimingBackend(VtkBackendMode mode)
+{
+    const std::string original = currentVtkBackend();
+    if (mode == VtkBackendMode::Current) {
+        return original;
+    }
+
+    if (mode == VtkBackendMode::Auto) {
+        static const std::array<const char*, 3> preferredBackends{ "TBB", "OpenMP", "STDThread" };
+        for (const char* backend : preferredBackends) {
+            if (vtkSMPTools::SetBackend(backend)) {
+                return currentVtkBackend();
+            }
+        }
+        if (vtkSMPTools::SetBackend("Sequential")) {
+            return currentVtkBackend();
+        }
+        return original;
+    }
+
+    const std::string requested = canonicalVtkBackendName(mode);
+    if (!requested.empty() && vtkSMPTools::SetBackend(requested.c_str())) {
+        return currentVtkBackend();
+    }
+
+    std::cerr << "[VTK] requested SMP backend '" << requested
+              << "' is unavailable; keeping backend '" << original << "'."
+              << std::endl;
+    return original;
+}
+
+template <typename RunOnce>
+VtkTimingStats measureVtkInScope(const vtkSMPTools::Config& config, int reps, RunOnce&& runOnce)
+{
+    VtkTimingStats stats;
+    vtkSMPTools::LocalScope(config, [&]() {
+        stats.backend = currentVtkBackend();
+        stats.estimatedThreads = std::max(1, vtkSMPTools::GetEstimatedNumberOfThreads());
+        double sumMs = 0.0;
+        double minMs = std::numeric_limits<double>::max();
+        for (int i = 0; i < std::max(reps, 1); ++i) {
+            const double ms = runOnce();
+            sumMs += ms;
+            minMs = std::min(minMs, ms);
+        }
+        stats.available = true;
+        stats.avgMs = sumMs / static_cast<double>(std::max(reps, 1));
+        stats.minMs = minMs;
+    });
+    return stats;
+}
+
+std::array<double, 3> loadFrameAxis(const std::array<float, 9>& frame, int axis)
+{
+    const size_t base = static_cast<size_t>(std::clamp(axis, 0, 2)) * 3u;
+    return {
+        static_cast<double>(frame[base + 0]),
+        static_cast<double>(frame[base + 1]),
+        static_cast<double>(frame[base + 2])
+    };
+}
+
+std::array<double, 3> loadLocalAxis(const GeometryAnalysis& geometry, size_t tupleIndex, int axis)
+{
+    const size_t base = tupleIndex * 9u + static_cast<size_t>(std::clamp(axis, 0, 2)) * 3u;
+    return {
+        static_cast<double>(geometry.frames[base + 0]),
+        static_cast<double>(geometry.frames[base + 1]),
+        static_cast<double>(geometry.frames[base + 2])
+    };
+}
+
+std::array<double, 3> projectToLocalSupport(const std::array<double, 3>& grad,
+                                            const GeometryAnalysis& geometry,
+                                            size_t tupleIndex)
+{
+    if (!geometry.available || tupleIndex >= geometry.dimTags.size()) {
+        return grad;
+    }
+
+    const std::array<double, 3> e1 = loadLocalAxis(geometry, tupleIndex, 0);
+    const std::array<double, 3> e2 = loadLocalAxis(geometry, tupleIndex, 1);
+    const std::array<double, 3> e3 = loadLocalAxis(geometry, tupleIndex, 2);
+    const std::uint32_t dim = std::clamp<std::uint32_t>(geometry.dimTags[tupleIndex], 1u, 3u);
+
+    std::array<double, 3> proj{
+        dot3(grad, e1) * e1[0],
+        dot3(grad, e1) * e1[1],
+        dot3(grad, e1) * e1[2]
+    };
+    if (dim >= 2u) {
+        const double d2 = dot3(grad, e2);
+        proj[0] += d2 * e2[0];
+        proj[1] += d2 * e2[1];
+        proj[2] += d2 * e2[2];
+    }
+    if (dim >= 3u) {
+        const double d3 = dot3(grad, e3);
+        proj[0] += d3 * e3[0];
+        proj[1] += d3 * e3[1];
+        proj[2] += d3 * e3[2];
+    }
+    return proj;
+}
+
+bool injectSurfaceAnalyticBenchmarks(CAEProcessingFacade& facade,
+                                     const std::string& datasetId,
+                                     CAEFieldAssociation assoc,
+                                     const GeometryAnalysis& geometry)
+{
+    if (!geometry.available || !geometry.surfaceLike) {
+        return false;
+    }
+    const size_t tupleCount = geometry.positions.size() / 3u;
+    if (tupleCount == 0 || geometry.positions.size() != tupleCount * 3u ||
+        geometry.frames.size() != tupleCount * 9u ||
+        geometry.dimTags.size() != tupleCount) {
+        return false;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    const std::array<double, 3> center = geometry.bounds.center;
+    const double L = std::max(geometry.bounds.maxExtent, 1.0);
+
+    std::array<double, 3> a = normalize3(loadFrameAxis(geometry.globalFrame, 0), { 1.0, 0.0, 0.0 });
+    std::array<double, 3> b = normalize3(loadFrameAxis(geometry.globalFrame, 1), arbitraryPerpendicular(a));
+    const double ab = dot3(a, b);
+    b = normalize3({ b[0] - ab * a[0], b[1] - ab * a[1], b[2] - ab * a[2] }, arbitraryPerpendicular(a));
+
+    std::vector<float> linear(tupleCount, 0.0f);
+    std::vector<float> linearGrad(tupleCount * 3u, 0.0f);
+    std::vector<float> trig(tupleCount, 0.0f);
+    std::vector<float> trigGrad(tupleCount * 3u, 0.0f);
+    std::vector<float> vecLinear(tupleCount * 3u, 0.0f);
+    std::vector<float> vecLinearGrad(tupleCount * 9u, 0.0f);
+
+    const std::array<double, 3> ambientLinearGrad{
+        0.9 * a[0] - 0.35 * b[0],
+        0.9 * a[1] - 0.35 * b[1],
+        0.9 * a[2] - 0.35 * b[2]
+    };
+    const std::array<double, 3> ambientVec0{
+        0.8 * a[0] - 0.2 * b[0],
+        0.8 * a[1] - 0.2 * b[1],
+        0.8 * a[2] - 0.2 * b[2]
+    };
+    const std::array<double, 3> ambientVec1{
+        -0.3 * a[0] + 0.9 * b[0],
+        -0.3 * a[1] + 0.9 * b[1],
+        -0.3 * a[2] + 0.9 * b[2]
+    };
+    const std::array<double, 3> ambientVec2{
+        0.25 * a[0] + 0.15 * b[0],
+        0.25 * a[1] + 0.15 * b[1],
+        0.25 * a[2] + 0.15 * b[2]
+    };
+
+    for (size_t i = 0; i < tupleCount; ++i) {
+        const std::array<double, 3> p = loadPosition(geometry.positions, i);
+        const std::array<double, 3> d = sub3(p, center);
+        const double u = dot3(d, a);
+        const double v = dot3(d, b);
+
+        linear[i] = static_cast<float>(0.9 * u - 0.35 * v);
+        const std::array<double, 3> linProj = projectToLocalSupport(ambientLinearGrad, geometry, i);
+        linearGrad[i * 3u + 0] = static_cast<float>(linProj[0]);
+        linearGrad[i * 3u + 1] = static_cast<float>(linProj[1]);
+        linearGrad[i * 3u + 2] = static_cast<float>(linProj[2]);
+
+        const double su = kPi * u / L;
+        const double sv = kPi * v / L;
+        trig[i] = static_cast<float>(L * (std::sin(su) + 0.35 * std::cos(sv)));
+        const std::array<double, 3> ambientTrigGrad{
+            kPi * std::cos(su) * a[0] - 0.35 * kPi * std::sin(sv) * b[0],
+            kPi * std::cos(su) * a[1] - 0.35 * kPi * std::sin(sv) * b[1],
+            kPi * std::cos(su) * a[2] - 0.35 * kPi * std::sin(sv) * b[2]
+        };
+        const std::array<double, 3> trigProj = projectToLocalSupport(ambientTrigGrad, geometry, i);
+        trigGrad[i * 3u + 0] = static_cast<float>(trigProj[0]);
+        trigGrad[i * 3u + 1] = static_cast<float>(trigProj[1]);
+        trigGrad[i * 3u + 2] = static_cast<float>(trigProj[2]);
+
+        const size_t base = i * 3u;
+        const size_t gbase = i * 9u;
+        vecLinear[base + 0] = static_cast<float>(0.8 * u - 0.2 * v);
+        vecLinear[base + 1] = static_cast<float>(-0.3 * u + 0.9 * v);
+        vecLinear[base + 2] = static_cast<float>(0.25 * u + 0.15 * v);
+        const std::array<double, 3> vec0Proj = projectToLocalSupport(ambientVec0, geometry, i);
+        const std::array<double, 3> vec1Proj = projectToLocalSupport(ambientVec1, geometry, i);
+        const std::array<double, 3> vec2Proj = projectToLocalSupport(ambientVec2, geometry, i);
+        vecLinearGrad[gbase + 0] = static_cast<float>(vec0Proj[0]);
+        vecLinearGrad[gbase + 1] = static_cast<float>(vec0Proj[1]);
+        vecLinearGrad[gbase + 2] = static_cast<float>(vec0Proj[2]);
+        vecLinearGrad[gbase + 3] = static_cast<float>(vec1Proj[0]);
+        vecLinearGrad[gbase + 4] = static_cast<float>(vec1Proj[1]);
+        vecLinearGrad[gbase + 5] = static_cast<float>(vec1Proj[2]);
+        vecLinearGrad[gbase + 6] = static_cast<float>(vec2Proj[0]);
+        vecLinearGrad[gbase + 7] = static_cast<float>(vec2Proj[1]);
+        vecLinearGrad[gbase + 8] = static_cast<float>(vec2Proj[2]);
+    }
+
+    bool ok = true;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_linear", assoc, linear, 1) && ok;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_linear_exact_grad", assoc, linearGrad, 3) && ok;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_trig", assoc, trig, 1) && ok;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_trig_exact_grad", assoc, trigGrad, 3) && ok;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_vec_linear", assoc, vecLinear, 3) && ok;
+    ok = facade.upsertArrayData(datasetId, "benchmark_surface_vec_linear_exact_grad", assoc, vecLinearGrad, 9) && ok;
+    return ok;
+}
+
 bool shouldKeepField(const CAEFieldInfo& field, RunMode mode, const std::string& filter)
 {
     if (mode == RunMode::Benchmarks) {
@@ -617,7 +1005,9 @@ ReferenceData buildVtkReference(vtkDataSet* dataset,
                                 const std::string& arrayName,
                                 CAEFieldAssociation assoc,
                                 CAEGradientMethod method,
-                                int reps)
+                                int reps,
+                                int vtkParallelThreads,
+                                VtkBackendMode vtkBackendMode)
 {
     // 当没有解析真值时，用 vtkGradientFilter 作为“工程基线”参考。
     // 同时顺便统计它的运行时间，便于和本项目 GPU 实现做对照。
@@ -639,17 +1029,24 @@ ReferenceData buildVtkReference(vtkDataSet* dataset,
     }
     gf->SetInputData(dataset);
 
-    double sumMs = 0.0;
-    double minMs = std::numeric_limits<double>::max();
-    for (int i = 0; i < std::max(reps, 1); ++i) {
+    auto runOnce = [&]() -> double {
         gf->Modified();
         const auto t0 = std::chrono::high_resolution_clock::now();
         gf->Update();
         const auto t1 = std::chrono::high_resolution_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        sumMs += ms;
-        minMs = std::min(minMs, ms);
-    }
+        return std::chrono::duration<double, std::milli>(t1 - t0).count();
+    };
+
+    const std::string backend = resolveVtkTimingBackend(vtkBackendMode);
+    const bool nested = vtkSMPTools::GetNestedParallelism();
+    const int requestedParallelThreads = std::max(vtkParallelThreads, 0);
+    const int effectiveParallelThreads =
+        requestedParallelThreads > 0 ? requestedParallelThreads : vtkSMPTools::GetEstimatedDefaultNumberOfThreads();
+
+    const VtkTimingStats singleStats = measureVtkInScope(
+        vtkSMPTools::Config{ 1, backend, nested }, reps, runOnce);
+    const VtkTimingStats parallelStats = measureVtkInScope(
+        vtkSMPTools::Config{ effectiveParallelThreads, backend, nested }, reps, runOnce);
 
     vtkDataSet* outDs = vtkDataSet::SafeDownCast(gf->GetOutput());
     if (!outDs) {
@@ -673,8 +1070,17 @@ ReferenceData buildVtkReference(vtkDataSet* dataset,
     }
 
     out.available = true;
-    out.timeAvgMs = sumMs / static_cast<double>(std::max(reps, 1));
-    out.timeMinMs = minMs;
+    out.timeAvgMs = parallelStats.available ? parallelStats.avgMs : singleStats.avgMs;
+    out.timeMinMs = parallelStats.available ? parallelStats.minMs : singleStats.minMs;
+    out.vtkParallelInfoAvailable = singleStats.available || parallelStats.available;
+    out.vtkBackend = parallelStats.backend.empty() ? singleStats.backend : parallelStats.backend;
+    out.vtkSingleThreads = singleStats.estimatedThreads;
+    out.vtkParallelThreads = parallelStats.estimatedThreads;
+    out.vtkRequestedParallelThreads = requestedParallelThreads;
+    out.vtkSingleAvgMs = singleStats.avgMs;
+    out.vtkSingleMinMs = singleStats.minMs;
+    out.vtkParallelAvgMs = parallelStats.avgMs;
+    out.vtkParallelMinMs = parallelStats.minMs;
     return out;
 }
 
@@ -684,8 +1090,11 @@ ReferenceData resolveReference(CAEProcessingFacade& facade,
                                const std::string& arrayName,
                                CAEFieldAssociation assoc,
                                CAEGradientMethod method,
+                               ResultSource resultSource,
                                ReferenceMode mode,
-                               int reps)
+                               int reps,
+                               int vtkParallelThreads,
+                               VtkBackendMode vtkBackendMode)
 {
     // Auto 模式优先尝试解析真值，拿不到时再退回 VTK。
     // 这样 benchmark 数据和真实工程数据都能共用一套实验脚本。
@@ -696,14 +1105,20 @@ ReferenceData resolveReference(CAEProcessingFacade& facade,
         return buildAnalyticReference(facade, datasetId, arrayName, assoc);
     }
     if (mode == ReferenceMode::Vtk) {
-        return buildVtkReference(vtkDataset, arrayName, assoc, method, reps);
+        if (resultSource == ResultSource::Vtk) {
+            return ReferenceData{};
+        }
+        return buildVtkReference(vtkDataset, arrayName, assoc, method, reps, vtkParallelThreads, vtkBackendMode);
     }
 
     ReferenceData analytic = buildAnalyticReference(facade, datasetId, arrayName, assoc);
     if (analytic.available) {
         return analytic;
     }
-    return buildVtkReference(vtkDataset, arrayName, assoc, method, reps);
+    if (resultSource == ResultSource::Vtk) {
+        return ReferenceData{};
+    }
+    return buildVtkReference(vtkDataset, arrayName, assoc, method, reps, vtkParallelThreads, vtkBackendMode);
 }
 
 CompareMetrics compareGradients(const std::vector<float>& result,
@@ -727,6 +1142,15 @@ CompareMetrics compareGradients(const std::vector<float>& result,
     metrics.referenceLabel = ref.label;
     metrics.refTimeAvgMs = ref.timeAvgMs;
     metrics.refTimeMinMs = ref.timeMinMs;
+    metrics.vtkParallelInfoAvailable = ref.vtkParallelInfoAvailable;
+    metrics.vtkBackend = ref.vtkBackend;
+    metrics.vtkSingleThreads = ref.vtkSingleThreads;
+    metrics.vtkParallelThreads = ref.vtkParallelThreads;
+    metrics.vtkRequestedParallelThreads = ref.vtkRequestedParallelThreads;
+    metrics.vtkSingleAvgMs = ref.vtkSingleAvgMs;
+    metrics.vtkSingleMinMs = ref.vtkSingleMinMs;
+    metrics.vtkParallelAvgMs = ref.vtkParallelAvgMs;
+    metrics.vtkParallelMinMs = ref.vtkParallelMinMs;
 
     if (!ref.available || resultComps <= 0 || ref.comps <= 0) {
         return metrics;
@@ -923,6 +1347,7 @@ void printConfig(const Options& opt)
               << " assoc=" << assocName(opt.assoc)
               << " run=" << runModeName(opt.runMode)
               << " reps=" << opt.reps
+              << " result=" << resultSourceName(opt.resultSource)
               << " reference=" << referenceModeName(opt.referenceMode)
               << " analyticBench=" << (opt.enableAnalyticBenchmarks ? "ON" : "OFF")
               << " method=" << methodName(opt.method)
@@ -936,6 +1361,8 @@ void printConfig(const Options& opt)
               << " adaptiveNeighborhood=" << (opt.useAdaptiveNeighborhood ? "ON" : "OFF")
               << " adaptiveDimension=" << (opt.useAdaptiveDimension ? "ON" : "OFF")
               << " adaptiveRegularization=" << (opt.useAdaptiveRegularization ? "ON" : "OFF")
+              << " vtkBackend=" << vtkBackendModeName(opt.vtkBackendMode)
+              << " vtkParallelThreads=" << opt.vtkParallelThreads
               << " dump=" << opt.maxSamplesToPrint;
     if (!opt.arrayName.empty()) {
         std::cout << " array=" << opt.arrayName;
@@ -989,6 +1416,19 @@ void printCompareBlock(const std::string& title, const CompareMetrics& m)
               << " finite_vecs=" << m.finiteVecCount
               << " nonfinite_vecs=" << m.nonFiniteVecCount
               << std::endl;
+    if (m.vtkParallelInfoAvailable) {
+        std::cout << "    vtk_backend=" << m.vtkBackend
+                  << " vtk_single_threads=" << m.vtkSingleThreads
+                  << " vtk_single_avg_ms=" << m.vtkSingleAvgMs
+                  << " vtk_single_min_ms=" << m.vtkSingleMinMs
+                  << " vtk_parallel_threads=" << m.vtkParallelThreads
+                  << " vtk_parallel_avg_ms=" << m.vtkParallelAvgMs
+                  << " vtk_parallel_min_ms=" << m.vtkParallelMinMs;
+        if (m.vtkRequestedParallelThreads > 0) {
+            std::cout << " vtk_requested_parallel_threads=" << m.vtkRequestedParallelThreads;
+        }
+        std::cout << std::endl;
+    }
     std::cout << "    abs_mae=" << m.vecMaeAbs
               << " abs_rmse=" << m.vecRmseAbs
               << " abs_max=" << m.vecMaxAbs
@@ -1050,18 +1490,21 @@ bool writeCsvReport(const std::string& path,
     }
 
     out << "dataset,association,array,input_components,success,failure_reason,"
-           "run_mode,reference_mode,method,reps,"
+           "run_mode,result_source,reference_mode,method,reps,"
            "adaptive_neighborhood,adaptive_dimension,adaptive_regularization,"
-           "min_neighbors,target_neighbors,max_neighbors,radius_scale,plane_eigen_ratio,line_eigen_ratio,lambda_amplify,"
+           "min_neighbors,target_neighbors,max_neighbors,radius_scale,plane_eigen_ratio,line_eigen_ratio,lambda_amplify,vtk_requested_parallel_threads,vtk_backend_mode,"
            "geom_available,geom_topo_dim,geom_global_dim,geom_surface_like,geom_extent_x,geom_extent_y,geom_extent_z,"
            "geom_eigen_ratio21,geom_eigen_ratio31,geom_eigen_ratio32,geom_dim1_count,geom_dim2_count,geom_dim3_count,"
+           "result_wall_avg_ms,result_wall_min_ms,result_gpu_avg_ms,result_gpu_min_ms,"
            "gl_wall_avg_ms,gl_wall_min_ms,gl_gpu_avg_ms,gl_gpu_min_ms,result_tuples,result_components,"
            "ambient_reference,ambient_compare_tuples,ambient_compare_components,ambient_raw_vecs,ambient_finite_vecs,ambient_nonfinite_vecs,ambient_low_ref_count,ambient_low_ref_ratio,"
+           "ambient_vtk_backend,ambient_vtk_single_threads,ambient_vtk_parallel_threads,ambient_vtk_single_avg_ms,ambient_vtk_single_min_ms,ambient_vtk_parallel_avg_ms,ambient_vtk_parallel_min_ms,"
            "ambient_abs_mae,ambient_abs_rmse,ambient_abs_max,ambient_ref_rms,ambient_nmae,ambient_nrmse,"
            "ambient_softrel_tau,ambient_softrel_mean,ambient_softrel_median,ambient_softrel_p90,"
            "ambient_stable_vecs,ambient_stable_abs_mae,ambient_stable_abs_rmse,ambient_stable_softrel_mean,ambient_stable_softrel_median,ambient_stable_softrel_p90,"
            "ambient_angle_mean_deg,ambient_angle_p90_deg,ambient_angle_count,ambient_scale_bias,ambient_worst_tuple,ambient_worst_vector,ambient_worst_abs_err,ambient_worst_ref_norm,ambient_ref_time_avg_ms,ambient_ref_time_min_ms,"
            "has_intrinsic,intrinsic_reference,intrinsic_compare_tuples,intrinsic_compare_components,intrinsic_raw_vecs,intrinsic_finite_vecs,intrinsic_nonfinite_vecs,intrinsic_low_ref_count,intrinsic_low_ref_ratio,"
+           "intrinsic_vtk_backend,intrinsic_vtk_single_threads,intrinsic_vtk_parallel_threads,intrinsic_vtk_single_avg_ms,intrinsic_vtk_single_min_ms,intrinsic_vtk_parallel_avg_ms,intrinsic_vtk_parallel_min_ms,"
            "intrinsic_abs_mae,intrinsic_abs_rmse,intrinsic_abs_max,intrinsic_ref_rms,intrinsic_nmae,intrinsic_nrmse,"
            "intrinsic_softrel_tau,intrinsic_softrel_mean,intrinsic_softrel_median,intrinsic_softrel_p90,"
            "intrinsic_stable_vecs,intrinsic_stable_abs_mae,intrinsic_stable_abs_rmse,intrinsic_stable_softrel_mean,intrinsic_stable_softrel_median,intrinsic_stable_softrel_p90,"
@@ -1079,6 +1522,7 @@ bool writeCsvReport(const std::string& path,
             << (rec.success ? "1" : "0") << ','
             << csvEscape(rec.failureReason) << ','
             << csvEscape(runModeName(opt.runMode)) << ','
+            << csvEscape(rec.resultSource) << ','
             << csvEscape(referenceModeName(opt.referenceMode)) << ','
             << csvEscape(methodName(opt.method)) << ','
             << opt.reps << ','
@@ -1092,6 +1536,8 @@ bool writeCsvReport(const std::string& path,
             << opt.planeEigenRatio << ','
             << opt.lineEigenRatio << ','
             << opt.lambdaAmplify << ','
+            << opt.vtkParallelThreads << ','
+            << csvEscape(vtkBackendModeName(opt.vtkBackendMode)) << ','
             << (geometry.available ? "1" : "0") << ','
             << geometry.topoDim << ','
             << geometry.globalGeomDim << ','
@@ -1105,6 +1551,10 @@ bool writeCsvReport(const std::string& path,
             << geometry.dim1Count << ','
             << geometry.dim2Count << ','
             << geometry.dim3Count << ','
+            << rec.resultWallAvgMs << ','
+            << rec.resultWallMinMs << ','
+            << rec.resultGpuAvgMs << ','
+            << rec.resultGpuMinMs << ','
             << rec.glWallAvgMs << ','
             << rec.glWallMinMs << ','
             << rec.glGpuAvgMs << ','
@@ -1119,6 +1569,13 @@ bool writeCsvReport(const std::string& path,
             << rec.ambientMetrics.nonFiniteVecCount << ','
             << rec.ambientMetrics.lowRefCount << ','
             << rec.ambientMetrics.lowRefRatio << ','
+            << csvEscape(rec.ambientMetrics.vtkBackend) << ','
+            << rec.ambientMetrics.vtkSingleThreads << ','
+            << rec.ambientMetrics.vtkParallelThreads << ','
+            << rec.ambientMetrics.vtkSingleAvgMs << ','
+            << rec.ambientMetrics.vtkSingleMinMs << ','
+            << rec.ambientMetrics.vtkParallelAvgMs << ','
+            << rec.ambientMetrics.vtkParallelMinMs << ','
             << rec.ambientMetrics.vecMaeAbs << ','
             << rec.ambientMetrics.vecRmseAbs << ','
             << rec.ambientMetrics.vecMaxAbs << ','
@@ -1154,6 +1611,13 @@ bool writeCsvReport(const std::string& path,
             << rec.intrinsicMetrics.nonFiniteVecCount << ','
             << rec.intrinsicMetrics.lowRefCount << ','
             << rec.intrinsicMetrics.lowRefRatio << ','
+            << csvEscape(rec.intrinsicMetrics.vtkBackend) << ','
+            << rec.intrinsicMetrics.vtkSingleThreads << ','
+            << rec.intrinsicMetrics.vtkParallelThreads << ','
+            << rec.intrinsicMetrics.vtkSingleAvgMs << ','
+            << rec.intrinsicMetrics.vtkSingleMinMs << ','
+            << rec.intrinsicMetrics.vtkParallelAvgMs << ','
+            << rec.intrinsicMetrics.vtkParallelMinMs << ','
             << rec.intrinsicMetrics.vecMaeAbs << ','
             << rec.intrinsicMetrics.vecRmseAbs << ','
             << rec.intrinsicMetrics.vecMaxAbs << ','
@@ -1249,6 +1713,7 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
     rec.dataset = summary.displayName;
     rec.association = assocName(opt.assoc);
     rec.arrayName = field.name;
+    rec.resultSource = resultSourceName(opt.resultSource);
     rec.inputComponents = field.numComponents;
 
     CAEGradientRequest req;
@@ -1274,46 +1739,88 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
             : CAEGradientMethod::ShapeFunctionDerivatives;
     }
 
-    double wallSum = 0.0;
-    double wallMin = std::numeric_limits<double>::max();
-    double gpuSum = 0.0;
-    double gpuMin = std::numeric_limits<double>::max();
-    CAEGradientResultMeta meta;
-
-    for (int i = 0; i < std::max(opt.reps, 1); ++i) {
-        if (!facade.computeGradient(req, meta)) {
-            rec.failureReason = "computeGradient failed";
-            return rec;
-        }
-        const double wall = facade.getLastComputeWallMs();
-        const double gpu = facade.getLastComputeGpuMs();
-        wallSum += wall;
-        gpuSum += gpu;
-        wallMin = std::min(wallMin, wall);
-        gpuMin = std::min(gpuMin, gpu);
-    }
-
     std::vector<float> result;
     int resultComps = 0;
-    if (!facade.getArrayData(datasetId, meta.resultArrayName, opt.assoc, result, resultComps)) {
-        rec.failureReason = "failed to fetch result array";
-        return rec;
+    ReferenceData vtkResult;
+
+    if (opt.resultSource == ResultSource::Gl) {
+        double wallSum = 0.0;
+        double wallMin = std::numeric_limits<double>::max();
+        double gpuSum = 0.0;
+        double gpuMin = std::numeric_limits<double>::max();
+        CAEGradientResultMeta meta;
+
+        for (int i = 0; i < std::max(opt.reps, 1); ++i) {
+            if (!facade.computeGradient(req, meta)) {
+                rec.failureReason = "computeGradient failed";
+                return rec;
+            }
+            const double wall = facade.getLastComputeWallMs();
+            const double gpu = facade.getLastComputeGpuMs();
+            wallSum += wall;
+            gpuSum += gpu;
+            wallMin = std::min(wallMin, wall);
+            gpuMin = std::min(gpuMin, gpu);
+        }
+
+        if (!facade.getArrayData(datasetId, meta.resultArrayName, opt.assoc, result, resultComps)) {
+            rec.failureReason = "failed to fetch result array";
+            return rec;
+        }
+
+        rec.resultWallAvgMs = wallSum / static_cast<double>(std::max(opt.reps, 1));
+        rec.resultWallMinMs = wallMin;
+        rec.resultGpuAvgMs = gpuSum / static_cast<double>(std::max(opt.reps, 1));
+        rec.resultGpuMinMs = gpuMin;
+        rec.glWallAvgMs = rec.resultWallAvgMs;
+        rec.glWallMinMs = rec.resultWallMinMs;
+        rec.glGpuAvgMs = rec.resultGpuAvgMs;
+        rec.glGpuMinMs = rec.resultGpuMinMs;
+    } else {
+        if (opt.referenceMode == ReferenceMode::Vtk) {
+            rec.failureReason = "vtk result mode cannot use vtk as reference";
+            return rec;
+        }
+        vtkResult = buildVtkReference(
+            vtkDataset, field.name, opt.assoc, effectiveMethod, opt.reps, opt.vtkParallelThreads, opt.vtkBackendMode);
+        if (!vtkResult.available) {
+            rec.failureReason = "failed to compute vtk result";
+            return rec;
+        }
+        result = std::move(vtkResult.values);
+        resultComps = vtkResult.comps;
+        rec.resultWallAvgMs = vtkResult.timeAvgMs;
+        rec.resultWallMinMs = vtkResult.timeMinMs;
+        rec.resultGpuAvgMs = 0.0;
+        rec.resultGpuMinMs = 0.0;
     }
 
     ReferenceData ref = resolveReference(
-        facade, datasetId, vtkDataset, field.name, opt.assoc, effectiveMethod, opt.referenceMode, opt.reps);
+        facade,
+        datasetId,
+        vtkDataset,
+        field.name,
+        opt.assoc,
+        effectiveMethod,
+        opt.resultSource,
+        opt.referenceMode,
+        opt.reps,
+        opt.vtkParallelThreads,
+        opt.vtkBackendMode);
     if (opt.referenceMode != ReferenceMode::Auto &&
         opt.referenceMode != ReferenceMode::None &&
         !ref.available) {
         rec.failureReason = "requested reference unavailable";
         return rec;
     }
+    if (opt.resultSource == ResultSource::Vtk &&
+        opt.referenceMode == ReferenceMode::Auto &&
+        !ref.available) {
+        rec.failureReason = "auto reference unavailable in vtk result mode";
+        return rec;
+    }
 
     rec.success = true;
-    rec.glWallAvgMs = wallSum / static_cast<double>(std::max(opt.reps, 1));
-    rec.glWallMinMs = wallMin;
-    rec.glGpuAvgMs = gpuSum / static_cast<double>(std::max(opt.reps, 1));
-    rec.glGpuMinMs = gpuMin;
     rec.resultComponents = resultComps;
     rec.resultTuples = resultComps > 0 ? result.size() / static_cast<size_t>(resultComps) : 0;
     rec.ambientMetrics = compareGradients(result, resultComps, ref);
@@ -1328,12 +1835,27 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
     }
 
     std::cout << "Case=" << field.name
+              << " result_source=" << rec.resultSource
               << " input_components=" << field.numComponents
               << " result_tuples=" << rec.resultTuples
               << " result_components=" << rec.resultComponents
-              << " gl_wall_avg_ms=" << rec.glWallAvgMs
-              << " gl_gpu_avg_ms=" << rec.glGpuAvgMs
+              << " result_wall_avg_ms=" << rec.resultWallAvgMs
+              << " result_gpu_avg_ms=" << rec.resultGpuAvgMs
               << std::endl;
+    if (opt.resultSource == ResultSource::Vtk && vtkResult.available && vtkResult.vtkParallelInfoAvailable) {
+        std::cout << "  ResultVTK"
+                  << " vtk_backend=" << vtkResult.vtkBackend
+                  << " vtk_single_threads=" << vtkResult.vtkSingleThreads
+                  << " vtk_single_avg_ms=" << vtkResult.vtkSingleAvgMs
+                  << " vtk_single_min_ms=" << vtkResult.vtkSingleMinMs
+                  << " vtk_parallel_threads=" << vtkResult.vtkParallelThreads
+                  << " vtk_parallel_avg_ms=" << vtkResult.vtkParallelAvgMs
+                  << " vtk_parallel_min_ms=" << vtkResult.vtkParallelMinMs;
+        if (vtkResult.vtkRequestedParallelThreads > 0) {
+            std::cout << " vtk_requested_parallel_threads=" << vtkResult.vtkRequestedParallelThreads;
+        }
+        std::cout << std::endl;
+    }
     printCompareBlock("Ambient", rec.ambientMetrics);
     if (rec.hasIntrinsicMetrics) {
         printCompareBlock("Intrinsic", rec.intrinsicMetrics);
@@ -1388,15 +1910,6 @@ int main(int argc, char** argv)
         return 3;
     }
 
-    std::vector<CAEFieldInfo> fields;
-    if (!facade.listFields(datasetId, opt.assoc, fields) || fields.empty()) {
-        std::cerr << "no arrays for association " << assocName(opt.assoc) << std::endl;
-        return 4;
-    }
-    std::sort(fields.begin(), fields.end(), [](const CAEFieldInfo& a, const CAEFieldInfo& b) {
-        return a.name < b.name;
-    });
-
     vtkSmartPointer<vtkDataSet> vtkDataset;
     if (!facade.exportDatasetToVTK(datasetId, vtkDataset)) {
         std::cout << "GeometryHint=failed to export dataset to VTK, geometry analysis and VTK reference may be unavailable" << std::endl;
@@ -1410,11 +1923,33 @@ int main(int argc, char** argv)
         geometrySummary = summarizeGeometry(geometry);
     }
 
+    bool injectedSurfaceBenchmarks = false;
+    if (opt.enableAnalyticBenchmarks && geometry.available && geometry.surfaceLike) {
+        injectedSurfaceBenchmarks = injectSurfaceAnalyticBenchmarks(facade, datasetId, opt.assoc, geometry);
+        if (injectedSurfaceBenchmarks) {
+            std::cout << "BenchmarkHint=surface-specific analytic benchmarks injected for "
+                      << assocName(opt.assoc)
+                      << " association"
+                      << std::endl;
+            facade.exportDatasetToVTK(datasetId, vtkDataset);
+        }
+    }
+
+    std::vector<CAEFieldInfo> fields;
+    if (!facade.listFields(datasetId, opt.assoc, fields) || fields.empty()) {
+        std::cerr << "no arrays for association " << assocName(opt.assoc) << std::endl;
+        return 4;
+    }
+    std::sort(fields.begin(), fields.end(), [](const CAEFieldInfo& a, const CAEFieldInfo& b) {
+        return a.name < b.name;
+    });
+
     std::cout << "Dataset=" << summary.displayName
               << " points=" << summary.pointCount
               << " cells=" << summary.cellCount
               << " association=" << assocName(opt.assoc)
               << " run=" << runModeName(opt.runMode)
+              << " result=" << resultSourceName(opt.resultSource)
               << " reference=" << referenceModeName(opt.referenceMode)
               << " method=" << methodName(opt.method)
               << std::endl;

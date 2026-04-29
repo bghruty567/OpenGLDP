@@ -32,9 +32,9 @@ enum class RunMode
 // 2. fields：真实字段的工程观察实验。
 struct Options
 {
-    std::string file="notch_stress";
+    std::string file="ShipHull_0";
     std::string path = "Data\\"+file+".vtk";
-    CAEFieldAssociation assoc = CAEFieldAssociation::Point;
+    CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     RunMode runMode = RunMode::Synthetic;
     std::string arrayName;
     std::string nameFilter;
@@ -46,7 +46,7 @@ struct Options
     bool listFields = false;
     bool listSynthetic = false;
     bool showConfig = false;
-    std::string csvPath = "results\\multiscale_report+point.csv";
+    std::string csvPath = "results\\multiscale_report+cell.csv";
     std::string exportPath="results\\multiscale"+file+"cell.vtk";
 
     float spatialSigmaFactor = 1.5f;
