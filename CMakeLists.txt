@@ -41,7 +41,7 @@ else()
 endif()
 
 find_package(OpenGL REQUIRED)
-find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
 
 find_package(VTK CONFIG REQUIRED COMPONENTS
     CommonCore
@@ -54,7 +54,6 @@ find_package(VTK CONFIG REQUIRED COMPONENTS
     RenderingCore
     RenderingOpenGL2
     RenderingFreeType
-    GUISupportQt
 )
 
 set(OPENGDP_VTK_LIBS
@@ -68,7 +67,6 @@ set(OPENGDP_VTK_LIBS
     VTK::RenderingCore
     VTK::RenderingOpenGL2
     VTK::RenderingFreeType
-    VTK::GUISupportQt
 )
 
 add_library(opengldp_core STATIC
@@ -108,7 +106,6 @@ add_executable(opengldp_gui
 target_link_libraries(opengldp_gui PRIVATE
     opengldp_core
     Qt5::Widgets
-    Qt5::OpenGL
 )
 
 add_executable(opengldp_benchmark

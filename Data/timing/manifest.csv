@@ -1,0 +1,7 @@
+family,label,file,relative_path,nx,ny,nz,points,cells,association,field,domain
+structured_grid,small,timing_struct_20x20x20.vtk,Data/timing/timing_struct_20x20x20.vtk,20,20,20,8000,6859,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"
+unstructured_hexa,small,timing_uhex_20x20x20.vtk,Data/timing/timing_uhex_20x20x20.vtk,20,20,20,8000,6859,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"
+structured_grid,medium,timing_struct_32x32x32.vtk,Data/timing/timing_struct_32x32x32.vtk,32,32,32,32768,29791,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"
+unstructured_hexa,medium,timing_uhex_32x32x32.vtk,Data/timing/timing_uhex_32x32x32.vtk,32,32,32,32768,29791,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"
+structured_grid,large,timing_struct_48x48x48.vtk,Data/timing/timing_struct_48x48x48.vtk,48,48,48,110592,103823,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"
+unstructured_hexa,large,timing_uhex_48x48x48.vtk,Data/timing/timing_uhex_48x48x48.vtk,48,48,48,110592,103823,"point,cell",scalars = 1.5x - 2.0y + 0.75z + 0.1,"[0,1]^3"

@@ -1,41 +1,42 @@
 #include "MainWindow.h"
 
-#include <algorithm>
-
-#include <QCoreApplication>
 #include <QComboBox>
-#include <QCheckBox>
+#include <QCoreApplication>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QListWidgetItem>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QSpinBox>
-#include <QSplitter>
+#include <QTime>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <QVTKOpenGLNativeWidget.h>
-#include <vtkActor.h>
-#include <vtkDataSet.h>
-#include <vtkDataSetMapper.h>
-#include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkNew.h>
-#include <vtkRenderer.h>
-
 namespace
 {
-// Qt/VTK/门面层之间大量使用 QString 与 std::string 交互，
-// 这里统一放一个转换辅助，避免每次都重复写编码转换。
 std::string toStdString(const QString& s)
 {
     return s.toLocal8Bit().toStdString();
+}
+
+QString gradientMethodLabel(CAEGradientMethod method)
+{
+    switch (method) {
+    case CAEGradientMethod::FiniteDifference:
+        return "有限差分";
+    case CAEGradientMethod::AdaptiveWeightedLeastSquares:
+        return "自适应WLS";
+    case CAEGradientMethod::ShapeFunctionDerivatives:
+        return "形函数导数";
+    default:
+        return "自动";
+    }
 }
 }
 
@@ -48,200 +49,303 @@ MainWindow::MainWindow(QWidget* parent)
     m_initialized = m_facade.initialize(toStdString(shaderDir));
 
     buildUi();
+    applyTheme();
     bindSignals();
+    updateActionState();
 
-    if (!m_initialized) {
-        appendLog("Failed to initialize OpenGL or shaders.");
+    if (m_initialized) {
+        appendLog("OpenGL 预处理引擎初始化完成。");
+    } else {
+        appendLog("初始化失败，梯度计算与数据优化功能已禁用。");
         QMessageBox::critical(
             this,
-            "Initialization Failed",
-            "CAEProcessingFacade initialization failed.\nCheck OpenGL and the Shaders folder.");
+            "初始化失败",
+            "CAEProcessingFacade 初始化失败。\n请检查 OpenGL 环境和 Shaders 目录。");
     }
 }
 
 void MainWindow::buildUi()
 {
-    // 整个窗口分成三列：
-    // 左：数据集管理；
-    // 中：梯度与多尺度参数；
-    // 右：VTK 渲染窗口和日志。
     setWindowTitle("OpenGLDP");
 
     auto* central = new QWidget(this);
-    auto* rootLayout = new QHBoxLayout(central);
-
-    auto* splitter = new QSplitter(this);
-    rootLayout->addWidget(splitter);
+    central->setObjectName("CentralWidget");
+    auto* rootLayout = new QVBoxLayout(central);
+    rootLayout->setContentsMargins(24, 20, 24, 24);
+    rootLayout->setSpacing(18);
     setCentralWidget(central);
 
-    // 左侧：加载/导出 + 数据集列表。
-    auto* leftPanel = new QWidget(this);
-    auto* leftLayout = new QVBoxLayout(leftPanel);
+    auto* titleLabel = new QLabel("OpenGLDP", this);
+    titleLabel->setObjectName("TitleLabel");
 
-    m_openBtn = new QPushButton("Open VTK", this);
-    m_exportBtn = new QPushButton("Export Current Dataset", this);
+    rootLayout->addWidget(titleLabel);
+
+    auto* contentLayout = new QHBoxLayout();
+    contentLayout->setSpacing(18);
+    rootLayout->addLayout(contentLayout, 1);
+
+    auto* leftColumn = new QVBoxLayout();
+    leftColumn->setSpacing(18);
+    contentLayout->addLayout(leftColumn, 4);
+
+    auto* rightColumn = new QVBoxLayout();
+    rightColumn->setSpacing(18);
+    contentLayout->addLayout(rightColumn, 5);
+
+    auto* datasetCard = new QFrame(this);
+    datasetCard->setObjectName("Card");
+    auto* datasetLayout = new QVBoxLayout(datasetCard);
+    datasetLayout->setContentsMargins(20, 20, 20, 20);
+    datasetLayout->setSpacing(14);
+
+    auto* datasetTitle = new QLabel("数据集工作区", this);
+    datasetTitle->setObjectName("SectionTitle");
+
+    auto* datasetButtonRow = new QHBoxLayout();
+    datasetButtonRow->setSpacing(10);
+
+    m_openBtn = new QPushButton("打开 VTK", this);
+    m_openBtn->setProperty("role", "primary");
+
+    m_exportBtn = new QPushButton("导出当前数据集", this);
+    m_exportBtn->setProperty("role", "export");
+
+    datasetButtonRow->addWidget(m_openBtn);
+    datasetButtonRow->addWidget(m_exportBtn);
+
+    auto* datasetListTitle = new QLabel("数据集列表", this);
+    datasetListTitle->setObjectName("FieldLabel");
+
     m_datasetList = new QListWidget(this);
-    m_summaryLabel = new QLabel("No dataset loaded", this);
+    m_datasetList->setAlternatingRowColors(true);
+    m_datasetList->setMinimumHeight(280);
 
-    leftLayout->addWidget(m_openBtn);
-    leftLayout->addWidget(m_exportBtn);
-    leftLayout->addWidget(new QLabel("Datasets", this));
-    leftLayout->addWidget(m_datasetList);
-    leftLayout->addWidget(m_summaryLabel);
+    datasetLayout->addWidget(datasetTitle);
+    datasetLayout->addLayout(datasetButtonRow);
+    datasetLayout->addWidget(datasetListTitle);
+    datasetLayout->addWidget(m_datasetList, 1);
+    leftColumn->addWidget(datasetCard, 3);
 
-    // 中间：算法参数区。
-    auto* middlePanel = new QWidget(this);
-    auto* form = new QFormLayout(middlePanel);
+    auto* summaryCard = new QFrame(this);
+    summaryCard->setObjectName("Card");
+    auto* summaryLayout = new QVBoxLayout(summaryCard);
+    summaryLayout->setContentsMargins(20, 20, 20, 20);
+    summaryLayout->setSpacing(12);
+
+    auto* summaryTitle = new QLabel("数据集概览", this);
+    summaryTitle->setObjectName("SectionTitle");
+
+    m_summaryLabel = new QLabel("未选择数据集。", this);
+    m_summaryLabel->setObjectName("SummaryLabel");
+    m_summaryLabel->setWordWrap(true);
+    m_summaryLabel->setTextFormat(Qt::RichText);
+    m_summaryLabel->setMinimumHeight(170);
+    m_summaryLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+
+    summaryLayout->addWidget(summaryTitle);
+    summaryLayout->addWidget(m_summaryLabel, 1);
+    leftColumn->addWidget(summaryCard, 2);
+
+    auto* processingCard = new QFrame(this);
+    processingCard->setObjectName("Card");
+    auto* processingLayout = new QVBoxLayout(processingCard);
+    processingLayout->setContentsMargins(20, 20, 20, 20);
+    processingLayout->setSpacing(14);
+
+    auto* processingTitle = new QLabel("处理操作", this);
+    processingTitle->setObjectName("SectionTitle");
+
+    auto* form = new QFormLayout();
+    form->setLabelAlignment(Qt::AlignLeft);
+    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    form->setHorizontalSpacing(16);
+    form->setVerticalSpacing(12);
 
     m_assocBox = new QComboBox(this);
-    m_assocBox->addItem("Point");
-    m_assocBox->addItem("Cell");
+    m_assocBox->addItem("点数据");
+    m_assocBox->addItem("单元数据");
 
     m_arrayBox = new QComboBox(this);
+    m_arrayBox->setMinimumWidth(260);
 
-    // “Auto” 是推荐入口：
-    // 规则网格会自动走 FD，非结构网格自动走 AWLS。
-    m_methodBox = new QComboBox(this);
-    m_methodBox->addItem("Auto");
-    m_methodBox->addItem("FiniteDifference");
-    m_methodBox->addItem("AdaptiveWLS");
-    m_methodBox->addItem("ShapeFunction");
+    form->addRow("属性归属", m_assocBox);
+    form->addRow("数组", m_arrayBox);
 
-    m_wExpSpin = new QDoubleSpinBox(this);
-    m_wExpSpin->setRange(0.1, 8.0);
-    m_wExpSpin->setDecimals(3);
-    m_wExpSpin->setValue(1.0);
+    auto* actionRow = new QHBoxLayout();
+    actionRow->setSpacing(10);
 
-    m_lambdaSpin = new QDoubleSpinBox(this);
-    m_lambdaSpin->setRange(1e-8, 1.0);
-    m_lambdaSpin->setDecimals(8);
-    m_lambdaSpin->setValue(1e-3);
+    m_computeBtn = new QPushButton("计算梯度", this);
+    m_computeBtn->setProperty("role", "primary");
 
-    // 一个字段可能是标量、向量或张量展开数组。
-    // 这里控制当前 VTK 颜色映射显示哪一个分量。
-    m_componentSpin = new QSpinBox(this);
-    m_componentSpin->setRange(0, 0);
+    m_optimizeBtn = new QPushButton("执行数据优化", this);
+    m_optimizeBtn->setProperty("role", "accent");
 
-    m_computeBtn = new QPushButton("Compute Gradient", this);
+    actionRow->addWidget(m_computeBtn);
+    actionRow->addWidget(m_optimizeBtn);
 
-    // 下面这一组控件直接对应 CAEMultiScaleRequest 中的参数，
-    // 用于把“多尺度分解 + 细节融合”的实验配置暴露给界面。
-    m_msLevelsSpin = new QSpinBox(this);
-    m_msLevelsSpin->setRange(1, 3);
-    m_msLevelsSpin->setValue(3);
+    processingLayout->addWidget(processingTitle);
+    processingLayout->addLayout(form);
+    processingLayout->addLayout(actionRow);
+    rightColumn->addWidget(processingCard, 2);
 
-    m_msIterSpin = new QSpinBox(this);
-    m_msIterSpin->setRange(1, 8);
-    m_msIterSpin->setValue(1);
+    auto* logCard = new QFrame(this);
+    logCard->setObjectName("Card");
+    auto* logLayout = new QVBoxLayout(logCard);
+    logLayout->setContentsMargins(20, 20, 20, 20);
+    logLayout->setSpacing(12);
 
-    m_msSpatialSigmaFactorSpin = new QDoubleSpinBox(this);
-    m_msSpatialSigmaFactorSpin->setRange(0.1, 20.0);
-    m_msSpatialSigmaFactorSpin->setDecimals(3);
-    m_msSpatialSigmaFactorSpin->setValue(1.5);
+    auto* logTitle = new QLabel("运行日志", this);
+    logTitle->setObjectName("SectionTitle");
 
-    m_msRangeSigmaFactorSpin = new QDoubleSpinBox(this);
-    m_msRangeSigmaFactorSpin->setRange(0.01, 10.0);
-    m_msRangeSigmaFactorSpin->setDecimals(3);
-    m_msRangeSigmaFactorSpin->setValue(0.5);
-
-    m_msLevelScaleSpin = new QDoubleSpinBox(this);
-    m_msLevelScaleSpin->setRange(1.1, 5.0);
-    m_msLevelScaleSpin->setDecimals(3);
-    m_msLevelScaleSpin->setValue(1.8);
-
-    m_msEdgeSigmaFactorSpin = new QDoubleSpinBox(this);
-    m_msEdgeSigmaFactorSpin->setRange(0.01, 10.0);
-    m_msEdgeSigmaFactorSpin->setDecimals(3);
-    m_msEdgeSigmaFactorSpin->setValue(0.35);
-
-    m_msGain0Spin = new QDoubleSpinBox(this);
-    m_msGain0Spin->setRange(0.0, 3.0);
-    m_msGain0Spin->setDecimals(3);
-    m_msGain0Spin->setValue(1.0);
-
-    m_msGain1Spin = new QDoubleSpinBox(this);
-    m_msGain1Spin->setRange(0.0, 3.0);
-    m_msGain1Spin->setDecimals(3);
-    m_msGain1Spin->setValue(0.75);
-
-    m_msGain2Spin = new QDoubleSpinBox(this);
-    m_msGain2Spin->setRange(0.0, 3.0);
-    m_msGain2Spin->setDecimals(3);
-    m_msGain2Spin->setValue(0.5);
-
-    m_msStoreIntermediateCheck = new QCheckBox("Store intermediate smooth/detail arrays", this);
-    m_msStoreIntermediateCheck->setChecked(true);
-
-    m_optimizeBtn = new QPushButton("Run MultiScale Optimization", this);
-
-
-    form->addRow("Association", m_assocBox);
-    form->addRow("Array", m_arrayBox);
-    form->addRow("Method", m_methodBox);
-    form->addRow("WLS Exponent", m_wExpSpin);
-    form->addRow("WLS Lambda", m_lambdaSpin);
-    form->addRow("Visible Component", m_componentSpin);
-    form->addRow("", m_computeBtn);
-
-    auto* optTitle = new QLabel("Data Optimization", this);
-    optTitle->setStyleSheet("font-weight: bold;");
-    form->addRow(optTitle);
-
-    form->addRow("MS Levels", m_msLevelsSpin);
-    form->addRow("MS Iter/Level", m_msIterSpin);
-    form->addRow("Spatial Sigma Factor", m_msSpatialSigmaFactorSpin);
-    form->addRow("Range Sigma Factor", m_msRangeSigmaFactorSpin);
-    form->addRow("Level Scale", m_msLevelScaleSpin);
-    form->addRow("Edge Sigma Factor", m_msEdgeSigmaFactorSpin);
-    form->addRow("Detail Gain L0", m_msGain0Spin);
-    form->addRow("Detail Gain L1", m_msGain1Spin);
-    form->addRow("Detail Gain L2", m_msGain2Spin);
-    form->addRow("", m_msStoreIntermediateCheck);
-    form->addRow("", m_optimizeBtn);
-
-
-    // 右侧：VTK 视图 + 运行日志。
-    auto* rightPanel = new QWidget(this);
-    auto* rightLayout = new QVBoxLayout(rightPanel);
-
-    m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_log = new QPlainTextEdit(this);
     m_log->setReadOnly(true);
+    m_log->setMinimumHeight(320);
 
-    m_renderWindow = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
-    m_renderer = vtkSmartPointer<vtkRenderer>::New();
-    m_renderer->SetBackground(0.15, 0.18, 0.22);
-    m_renderWindow->AddRenderer(m_renderer);
-    m_vtkWidget->setRenderWindow(m_renderWindow);
+    logLayout->addWidget(logTitle);
+    logLayout->addWidget(m_log, 1);
+    rightColumn->addWidget(logCard, 3);
+}
 
-    rightLayout->addWidget(m_vtkWidget, 1);
-    rightLayout->addWidget(m_log, 1);
-
-    splitter->addWidget(leftPanel);
-    splitter->addWidget(middlePanel);
-    splitter->addWidget(rightPanel);
-    splitter->setStretchFactor(2, 1);
+void MainWindow::applyTheme()
+{
+    setStyleSheet(R"(
+QWidget#CentralWidget {
+    background: #edf3f8;
+    color: #0f172a;
+    font-family: "Microsoft YaHei UI";
+    font-size: 14px;
+}
+QLabel#TitleLabel {
+    font-size: 30px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.5px;
+}
+QFrame#Card {
+    background: #ffffff;
+    border: 1px solid #dbe4ee;
+    border-radius: 18px;
+}
+QLabel#SectionTitle {
+    font-size: 18px;
+    font-weight: 700;
+    color: #0f172a;
+}
+QLabel#FieldLabel {
+    color: #334155;
+    font-weight: 600;
+}
+QLabel#SummaryLabel {
+    background: #f8fbff;
+    border: 1px solid #dbe4ee;
+    border-radius: 14px;
+    padding: 14px;
+    color: #1e293b;
+}
+QPushButton {
+    border: none;
+    border-radius: 12px;
+    padding: 10px 16px;
+    background: #e2e8f0;
+    color: #0f172a;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #d8e1eb;
+}
+QPushButton:pressed {
+    background: #cbd5e1;
+}
+QPushButton:disabled {
+    background: #edf2f7;
+    color: #94a3b8;
+}
+QPushButton[role="primary"] {
+    background: #2563eb;
+    color: #ffffff;
+}
+QPushButton[role="primary"]:hover {
+    background: #1d4ed8;
+}
+QPushButton[role="accent"] {
+    background: #0f766e;
+    color: #ffffff;
+}
+QPushButton[role="accent"]:hover {
+    background: #115e59;
+}
+QPushButton[role="export"] {
+    background: #0891b2;
+    color: #ffffff;
+}
+QPushButton[role="export"]:hover {
+    background: #0e7490;
+}
+QComboBox,
+QListWidget,
+QPlainTextEdit {
+    background: #f8fbff;
+    border: 1px solid #d7e0ea;
+    border-radius: 12px;
+    padding: 8px 10px;
+}
+QComboBox {
+    min-height: 22px;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+QListWidget {
+    outline: none;
+}
+QListWidget::item {
+    padding: 8px 6px;
+    border-radius: 8px;
+}
+QListWidget::item:selected {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+QPlainTextEdit {
+    background: #0f172a;
+    color: #dbeafe;
+    font-family: "Consolas";
+    font-size: 13px;
+    selection-background-color: #1d4ed8;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 4px;
+}
+QScrollBar::handle:vertical {
+    background: #bfd0e1;
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+)");
 }
 
 void MainWindow::bindSignals()
 {
-    // 这一层只做“信号 -> 门面函数”的绑定，
-    // 真正的算法执行都在 CAEProcessingFacade 里。
     connect(m_openBtn, &QPushButton::clicked, this, &MainWindow::openFile);
     connect(m_exportBtn, &QPushButton::clicked, this, &MainWindow::exportCurrentDataset);
     connect(m_computeBtn, &QPushButton::clicked, this, &MainWindow::computeGradient);
     connect(m_optimizeBtn, &QPushButton::clicked, this, &MainWindow::computeMultiScaleOptimization);
-
-
     connect(m_datasetList, &QListWidget::currentRowChanged, this, &MainWindow::handleDatasetChanged);
     connect(m_assocBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::handleAssociationChanged);
     connect(m_arrayBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::handleArrayChanged);
-    connect(m_componentSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { renderSelectedArray(); });
 }
 
 void MainWindow::appendLog(const QString& text)
 {
-    m_log->appendPlainText(text);
+    const QString time = QTime::currentTime().toString("HH:mm:ss");
+    m_log->appendPlainText(QString("[%1] %2").arg(time, text));
 }
 
 QString MainWindow::selectedDatasetId() const
@@ -262,44 +366,30 @@ CAEFieldAssociation MainWindow::currentAssociation() const
 
 CAEGradientMethod MainWindow::currentMethod() const
 {
-    switch (m_methodBox->currentIndex()) {
-    case 1:
-        return CAEGradientMethod::FiniteDifference;
-    case 2:
-        return CAEGradientMethod::AdaptiveWeightedLeastSquares;
-    case 3:
-        return CAEGradientMethod::ShapeFunctionDerivatives;
-    default:
-        return CAEGradientMethod::Auto;
-    }
+    return CAEGradientMethod::Auto;
 }
 
 void MainWindow::openFile()
 {
-    if (!m_initialized) {
-        return;
-    }
-
-    // 当前 GUI 只读取 legacy VTK，和命令行测试程序保持一致。
     const QString filePath = QFileDialog::getOpenFileName(
-        this, "Open VTK File", QString(), "VTK legacy (*.vtk)");
+        this, "打开 VTK 文件", QString(), "VTK 文件 (*.vtk)");
 
     if (filePath.isEmpty()) {
         return;
     }
 
-    // 真正的读取、VTK -> DataObject 转换，以及字段扫描都交给门面层处理。
     const std::string dsId = m_facade.loadDatasetFromVTKFile(toStdString(filePath));
     if (dsId.empty()) {
-        QMessageBox::warning(this, "Load Failed", "Failed to load the VTK file.");
+        QMessageBox::warning(this, "加载失败", "VTK 文件加载失败。");
         return;
     }
 
     auto* item = new QListWidgetItem(QFileInfo(filePath).fileName(), m_datasetList);
     item->setData(Qt::UserRole, QString::fromStdString(dsId));
+    item->setToolTip(filePath);
     m_datasetList->setCurrentItem(item);
 
-    appendLog("Loaded dataset: " + filePath);
+    appendLog("已加载数据集: " + filePath);
 }
 
 void MainWindow::exportCurrentDataset()
@@ -310,56 +400,51 @@ void MainWindow::exportCurrentDataset()
     }
 
     const QString outPath = QFileDialog::getSaveFileName(
-        this, "Export VTK File", QString(), "VTK legacy (*.vtk)");
+        this, "导出 VTK 文件", QString(), "VTK 文件 (*.vtk)");
 
     if (outPath.isEmpty()) {
         return;
     }
 
-    // Export in binary: some datasets contain NaN values and ASCII legacy VTK
-    // may serialize them as "-nan(ind)", which older ParaView readers reject.
     const bool ok = m_facade.saveDatasetToVTKFile(
         toStdString(dsId), toStdString(outPath), true);
-
     if (!ok) {
-        QMessageBox::warning(this, "Export Failed", "Failed to export the current dataset.");
+        QMessageBox::warning(this, "导出失败", "当前数据集导出失败。");
         return;
     }
 
-    appendLog("Exported dataset: " + outPath);
+    appendLog("已导出数据集: " + outPath);
 }
 
 void MainWindow::computeGradient()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty() || m_arrayBox->currentText().isEmpty()) {
+    const QString arrayName = m_arrayBox->currentText();
+    if (dsId.isEmpty() || arrayName.isEmpty()) {
         return;
     }
 
-    // 把界面上当前选择的字段、归属类型和方法参数收集成统一请求对象，
-    // 这样 GUI 和测试程序走的是完全同一条算法入口。
     CAEGradientRequest req;
     req.datasetId = toStdString(dsId);
-    req.inputArrayName = toStdString(m_arrayBox->currentText());
+    req.inputArrayName = toStdString(arrayName);
     req.association = currentAssociation();
     req.method = currentMethod();
-    req.wlsExponent = static_cast<float>(m_wExpSpin->value());
-    req.wlsLambda = static_cast<float>(m_lambdaSpin->value());
+    req.wlsExponent = 1.0f;
+    req.wlsLambda = 1e-3f;
 
     CAEGradientResultMeta meta;
     const bool ok = m_facade.computeGradient(req, meta);
-
     if (!ok) {
-        QMessageBox::warning(this, "Compute Failed", "Gradient computation failed.");
+        QMessageBox::warning(this, "计算失败", "梯度计算失败。");
         return;
     }
 
-    appendLog(QString("Computed: %1, wall=%2 ms, gpu=%3 ms")
+    appendLog(QString("梯度计算完成: %1 | 方法=%2 | 总耗时=%3 ms | GPU耗时=%4 ms")
                   .arg(QString::fromStdString(meta.resultArrayName))
+                  .arg(gradientMethodLabel(meta.method))
                   .arg(meta.computeWallMs, 0, 'f', 3)
                   .arg(meta.computeGpuMs, 0, 'f', 3));
 
-    // 梯度结果会以新数组的形式写回数据集，所以计算完成后要刷新字段列表。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
@@ -368,58 +453,51 @@ void MainWindow::computeGradient()
     if (idx >= 0) {
         m_arrayBox->setCurrentIndex(idx);
     }
-
-    renderSelectedArray();
 }
 
 void MainWindow::computeMultiScaleOptimization()
 {
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty() || m_arrayBox->currentText().isEmpty()) {
+    const QString arrayName = m_arrayBox->currentText();
+    if (dsId.isEmpty() || arrayName.isEmpty()) {
         return;
     }
 
-    // 多尺度模块同样通过请求对象调用门面层。
     CAEMultiScaleRequest req;
     req.datasetId = toStdString(dsId);
-    req.inputArrayName = toStdString(m_arrayBox->currentText());
+    req.inputArrayName = toStdString(arrayName);
     req.association = currentAssociation();
-
-    req.levels = m_msLevelsSpin->value();
-    req.iterationsPerLevel = m_msIterSpin->value();
-    req.spatialSigmaFactor = static_cast<float>(m_msSpatialSigmaFactorSpin->value());
-    req.rangeSigmaFactor = static_cast<float>(m_msRangeSigmaFactorSpin->value());
-    req.levelScale = static_cast<float>(m_msLevelScaleSpin->value());
-    req.edgeSigmaFactor = static_cast<float>(m_msEdgeSigmaFactorSpin->value());
-
-    req.detailGain0 = static_cast<float>(m_msGain0Spin->value());
-    req.detailGain1 = static_cast<float>(m_msGain1Spin->value());
-    req.detailGain2 = static_cast<float>(m_msGain2Spin->value());
-
-    req.storeIntermediate = m_msStoreIntermediateCheck->isChecked();
+    req.levels = 3;
+    req.iterationsPerLevel = 1;
+    req.spatialSigmaFactor = 1.5f;
+    req.rangeSigmaFactor = 0.5f;
+    req.levelScale = 1.8f;
+    req.edgeSigmaFactor = 0.35f;
+    req.detailGain0 = 1.0f;
+    req.detailGain1 = 0.75f;
+    req.detailGain2 = 0.5f;
+    req.storeIntermediate = true;
 
     CAEMultiScaleResultMeta meta;
     const bool ok = m_facade.computeMultiScaleDecompositionAndFusion(req, meta);
     if (!ok) {
-        QMessageBox::warning(this, "Optimization Failed", "Multi-scale optimization failed.");
+        QMessageBox::warning(this, "处理失败", "数据优化失败。");
         return;
     }
 
-    appendLog(QString("Optimized: %1 -> %2, levels=%3, wall=%4 ms, gpu=%5 ms")
+    appendLog(QString("数据优化完成: %1 -> %2 | 总耗时=%3 ms | GPU耗时=%4 ms")
                   .arg(QString::fromStdString(meta.sourceArrayName))
                   .arg(QString::fromStdString(meta.fusedArrayName))
-                  .arg(meta.numLevels)
                   .arg(meta.computeWallMs, 0, 'f', 3)
                   .arg(meta.computeGpuMs, 0, 'f', 3));
 
     for (const auto& name : meta.smoothArrayNames) {
-        appendLog("  smooth: " + QString::fromStdString(name));
+        appendLog("  平滑层数组: " + QString::fromStdString(name));
     }
     for (const auto& name : meta.detailArrayNames) {
-        appendLog("  detail: " + QString::fromStdString(name));
+        appendLog("  细节层数组: " + QString::fromStdString(name));
     }
 
-    // 平滑层、细节层和 fused 结果都可能新增到数据集中，因此需要整体刷新。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
@@ -428,71 +506,53 @@ void MainWindow::computeMultiScaleOptimization()
     if (idx >= 0) {
         m_arrayBox->setCurrentIndex(idx);
     }
-
-    m_componentSpin->setValue(0);
-    renderSelectedArray();
 }
 
 void MainWindow::handleDatasetChanged()
 {
-    // 切换数据集时，左中右三列都要跟着更新。
     refreshFieldList();
     refreshSummary();
     refreshResultLog();
-    renderSelectedArray();
+    updateActionState();
 }
 
 void MainWindow::handleAssociationChanged()
 {
     refreshFieldList();
-    renderSelectedArray();
+    updateActionState();
 }
 
 void MainWindow::handleArrayChanged()
 {
-    const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) {
-        return;
-    }
-
-    std::vector<CAEFieldInfo> fields;
-    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) {
-        return;
-    }
-
-    const QString currentName = m_arrayBox->currentText();
-    // 根据当前数组的真实分量数，动态限制“可视化分量”选择范围。
-    int comps = 1;
-    for (const auto& f : fields) {
-        if (QString::fromStdString(f.name) == currentName) {
-            comps = f.numComponents;
-            break;
-        }
-    }
-
-    m_componentSpin->setMaximum(std::max(0, comps - 1));
-    renderSelectedArray();
+    updateActionState();
 }
 
 void MainWindow::refreshFieldList()
 {
+    const QString previous = m_arrayBox->currentText();
+
+    m_arrayBox->blockSignals(true);
     m_arrayBox->clear();
 
     const QString dsId = selectedDatasetId();
-    if (dsId.isEmpty()) {
-        return;
+    if (!dsId.isEmpty()) {
+        std::vector<CAEFieldInfo> fields;
+        if (m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) {
+            for (const auto& field : fields) {
+                m_arrayBox->addItem(QString::fromStdString(field.name));
+            }
+        }
     }
 
-    std::vector<CAEFieldInfo> fields;
-    if (!m_facade.listFields(toStdString(dsId), currentAssociation(), fields)) {
-        return;
+    int idx = previous.isEmpty() ? -1 : m_arrayBox->findText(previous);
+    if (idx < 0 && m_arrayBox->count() > 0) {
+        idx = 0;
+    }
+    if (idx >= 0) {
+        m_arrayBox->setCurrentIndex(idx);
     }
 
-    // 这里只显示当前 Point/Cell 归属下的字段。
-    for (const auto& f : fields) {
-        m_arrayBox->addItem(QString::fromStdString(f.name));
-    }
-
+    m_arrayBox->blockSignals(false);
     handleArrayChanged();
 }
 
@@ -500,23 +560,47 @@ void MainWindow::refreshSummary()
 {
     const QString dsId = selectedDatasetId();
     if (dsId.isEmpty()) {
-        m_summaryLabel->setText("No dataset selected");
+        m_summaryLabel->setText("未选择数据集。");
         return;
     }
 
-    CAEDatasetSummary s;
-    if (!m_facade.getDatasetSummary(toStdString(dsId), s)) {
-        m_summaryLabel->setText("Failed to read dataset summary");
+    CAEDatasetSummary summary;
+    if (!m_facade.getDatasetSummary(toStdString(dsId), summary)) {
+        m_summaryLabel->setText("数据集概览读取失败。");
         return;
     }
 
-    // 摘要信息只显示最核心的规模信息，避免左侧面板过于拥挤。
+    int pointFieldCount = 0;
+    int cellFieldCount = 0;
+    for (const auto& field : summary.fields) {
+        if (field.association == CAEFieldAssociation::Point) {
+            ++pointFieldCount;
+        } else {
+            ++cellFieldCount;
+        }
+    }
+
+    const QString gridLabel =
+        summary.gridClass == CAEGridClass::Regular ? "规则" : "非结构";
+
     m_summaryLabel->setText(
-        QString("Name: %1\nPoints: %2\nCells: %3\nGrid: %4")
-            .arg(QString::fromStdString(s.displayName))
-            .arg(static_cast<qulonglong>(s.pointCount))
-            .arg(static_cast<qulonglong>(s.cellCount))
-            .arg(s.gridClass == CAEGridClass::Regular ? "Regular" : "Unstructured"));
+        QString(
+            "<div style='font-size:18px; font-weight:700; color:#0f172a;'>%1</div>"
+            "<div style='margin-top:6px; color:#64748b;'>%2网格</div>"
+            "<div style='margin-top:14px; line-height:1.8;'>"
+            "<b>点数:</b> %3<br/>"
+            "<b>单元数:</b> %4<br/>"
+            "<b>点数组数:</b> %5<br/>"
+            "<b>单元数组数:</b> %6<br/>"
+            "<b>结果数组数:</b> %7"
+            "</div>")
+            .arg(QString::fromStdString(summary.displayName))
+            .arg(gridLabel)
+            .arg(static_cast<qulonglong>(summary.pointCount))
+            .arg(static_cast<qulonglong>(summary.cellCount))
+            .arg(pointFieldCount)
+            .arg(cellFieldCount)
+            .arg(static_cast<qulonglong>(summary.results.size())));
 }
 
 void MainWindow::refreshResultLog()
@@ -526,53 +610,24 @@ void MainWindow::refreshResultLog()
         return;
     }
 
-    CAEDatasetSummary s;
-    if (!m_facade.getDatasetSummary(toStdString(dsId), s)) {
+    CAEDatasetSummary summary;
+    if (!m_facade.getDatasetSummary(toStdString(dsId), summary)) {
         return;
     }
 
-    appendLog("Result count: " + QString::number(static_cast<int>(s.results.size())));
+    appendLog(QString("当前数据集: %1 | 结果数组=%2")
+                  .arg(QString::fromStdString(summary.displayName))
+                  .arg(static_cast<qulonglong>(summary.results.size())));
 }
 
-void MainWindow::renderSelectedArray()
+void MainWindow::updateActionState()
 {
-    const QString dsId = selectedDatasetId();
-    const QString arrayName = m_arrayBox->currentText();
+    const bool hasDataset = !selectedDatasetId().isEmpty();
+    const bool hasArray = hasDataset && !m_arrayBox->currentText().isEmpty();
 
-    if (dsId.isEmpty() || arrayName.isEmpty()) {
-        return;
-    }
-
-    // 可视化时不直接操作内部 DataObject，而是先导出成 VTK 数据集，
-    // 这样 VTK mapper/actor 可以直接复用标准可视化管线。
-    vtkSmartPointer<vtkDataSet> ds;
-    if (!m_facade.exportDatasetToVTK(toStdString(dsId), ds) || !ds) {
-        return;
-    }
-
-    vtkNew<vtkDataSetMapper> mapper;
-    mapper->SetInputData(ds);
-
-    if (currentAssociation() == CAEFieldAssociation::Point) {
-        mapper->SetScalarModeToUsePointFieldData();
-    } else {
-        mapper->SetScalarModeToUseCellFieldData();
-    }
-
-    const std::string arrayStd = toStdString(arrayName);
-    // 选择字段数组并指定“当前显示第几个分量”，
-    // 适用于标量场、向量场梯度以及多尺度中间数组。
-    mapper->SelectColorArray(arrayStd.c_str());
-    mapper->ColorByArrayComponent(arrayStd.c_str(), m_componentSpin->value());
-    mapper->ScalarVisibilityOn();
-
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-
-    // 每次切换数组时直接重建一个新的 mapper/actor，
-    // 逻辑最直观，也最不容易把旧状态残留到新结果上。
-    m_renderer->RemoveAllViewProps();
-    m_renderer->AddActor(actor);
-    m_renderer->ResetCamera();
-    m_renderWindow->Render();
+    m_exportBtn->setEnabled(hasDataset);
+    m_assocBox->setEnabled(hasDataset);
+    m_arrayBox->setEnabled(hasDataset);
+    m_computeBtn->setEnabled(m_initialized && hasArray);
+    m_optimizeBtn->setEnabled(m_initialized && hasArray);
 }

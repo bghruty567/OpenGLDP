@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <set>
 #include <string>
@@ -28,6 +29,87 @@
 namespace
 {
 using namespace testharness;
+
+class TeeStreamBuf : public std::streambuf
+{
+public:
+    TeeStreamBuf(std::streambuf* a, std::streambuf* b)
+        : first(a), second(b)
+    {
+    }
+
+protected:
+    int overflow(int ch) override
+    {
+        if (ch == EOF) {
+            return 0;
+        }
+
+        const int outA = this->first ? this->first->sputc(static_cast<char>(ch)) : ch;
+        const int outB = this->second ? this->second->sputc(static_cast<char>(ch)) : ch;
+        return (outA == EOF || outB == EOF) ? EOF : ch;
+    }
+
+    int sync() override
+    {
+        const int syncA = this->first ? this->first->pubsync() : 0;
+        const int syncB = this->second ? this->second->pubsync() : 0;
+        return (syncA == 0 && syncB == 0) ? 0 : -1;
+    }
+
+private:
+    std::streambuf* first = nullptr;
+    std::streambuf* second = nullptr;
+};
+
+class ScopedRunLog
+{
+public:
+    explicit ScopedRunLog(const std::filesystem::path& path)
+        : logPath(path)
+    {
+        std::error_code ec;
+        if (this->logPath.has_parent_path()) {
+            std::filesystem::create_directories(this->logPath.parent_path(), ec);
+        }
+
+        this->file.open(this->logPath, std::ios::out | std::ios::trunc);
+        if (!this->file) {
+            return;
+        }
+
+        this->oldCout = std::cout.rdbuf();
+        this->oldCerr = std::cerr.rdbuf();
+        this->coutBuf = std::make_unique<TeeStreamBuf>(this->oldCout, this->file.rdbuf());
+        this->cerrBuf = std::make_unique<TeeStreamBuf>(this->oldCerr, this->file.rdbuf());
+        std::cout.rdbuf(this->coutBuf.get());
+        std::cerr.rdbuf(this->cerrBuf.get());
+        this->active = true;
+
+        std::cout << "RunLog=" << this->logPath.string() << std::endl;
+    }
+
+    ~ScopedRunLog()
+    {
+        if (!this->active) {
+            return;
+        }
+
+        std::cout.flush();
+        std::cerr.flush();
+        std::cout.rdbuf(this->oldCout);
+        std::cerr.rdbuf(this->oldCerr);
+    }
+
+private:
+    std::filesystem::path logPath;
+    std::ofstream file;
+    std::streambuf* oldCout = nullptr;
+    std::streambuf* oldCerr = nullptr;
+    std::unique_ptr<TeeStreamBuf> coutBuf;
+    std::unique_ptr<TeeStreamBuf> cerrBuf;
+    bool active = false;
+};
 
 enum class ReferenceMode
 {
@@ -69,23 +151,23 @@ enum class VtkBackendMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string file="ShipHull_0";
-    std::string path = "Data\\"+file+".vtk";
+    std::string file="timing_struct_20x20x20";
+    std::string path = "Data\\timing\\"+file+".vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     std::string arrayName;
-    int reps = 5;
-    bool enableAnalyticBenchmarks = true;
+    int reps = 1;
+    bool enableAnalyticBenchmarks = false;
     ReferenceMode referenceMode = ReferenceMode::Auto;
     ResultSource resultSource = ResultSource::Gl;
     int maxSamplesToPrint = 12;
-    RunMode runMode = RunMode::Fields;
+    RunMode runMode = RunMode::Single;
     bool listFields = false;
     bool listBenchmarks = false;
     bool showConfig = false;
     std::string nameFilter;
     std::string csvPath = "results\\"+file+"cell.csv";
     int vtkParallelThreads = 0;
-    VtkBackendMode vtkBackendMode = VtkBackendMode::Auto;
+    VtkBackendMode vtkBackendMode = VtkBackendMode::StdThread;
 
     CAEGradientMethod method = CAEGradientMethod::Auto;
     bool useAdaptiveNeighborhood = true;
@@ -1871,6 +1953,8 @@ CaseRecord runSingleCase(CAEProcessingFacade& facade,
 
 int main(int argc, char** argv)
 {
+    ScopedRunLog runLog(std::filesystem::path("results") / "benchmark_last_run.log");
+
     // main 负责把“命令行工具”串成一条完整实验链：
     // 解析参数 -> 初始化门面 -> 读取数据 -> 做几何分析 ->
     // 选择测试字段 -> 执行 case -> 导出 CSV -> 输出总览统计。
