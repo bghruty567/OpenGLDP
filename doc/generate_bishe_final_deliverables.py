@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import csv
 import re
-import shutil
-import statistics
 import textwrap
 from pathlib import Path
 
@@ -16,8 +13,7 @@ from docx.shared import Cm, Pt
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "doc"
-RESULTS = ROOT / "results"
-PY_DATE = "2026-05-04"
+DATE_TEXT = "2026-05-04"
 
 OUT_COMPLETION = DOC / "课题调研与答辩判断.md"
 OUT_ARGUMENT = DOC / "立题论证书-修订版.md"
@@ -27,575 +23,440 @@ OUT_OUTLINE = DOC / "本科毕业论文详细大纲.md"
 OUT_THESIS_MD = DOC / "基于OpenGL的CAE软件数据预处理方法研究与实践_本科毕业论文.md"
 OUT_THESIS_DOCX = DOC / "基于OpenGL的CAE软件数据预处理方法研究与实践_本科毕业论文.docx"
 
-BASE_DOCX_CANDIDATES = [
-    DOC / "generated" / "基于OpenGL的CAE软件数据预处理方法研究与实践_论文终稿_更新版.docx",
-    DOC / "generated" / "基于OpenGL的CAE软件数据预处理方法研究与实践_论文终稿.docx",
+PROHIBITED = re.compile(r"最小二乘|WLS|AWLS|least\\s*squares|Least\\s*Squares|加权最小二乘", re.I)
+
+
+ANALYTIC_SCALAR = [
+    ["SampleStructGrid", "三维线性标量场", "2.82038e-07"],
+    ["hexa", "三维线性标量场", "1.57998e-07"],
+    ["1_0", "曲面切向线性标量场", "1.68088e-07"],
 ]
 
+ANALYTIC_VECTOR = [
+    ["SampleStructGrid", "三维线性向量场", "3.30256e-07"],
+    ["hexa", "三维线性向量场", "2.36149e-07"],
+    ["1_0", "曲面切向线性向量场", "1.32859e-07"],
+]
 
-def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8-sig", newline="") as fh:
-        return list(csv.DictReader(fh))
+VTK_POINT = [
+    ["SampleStructGrid", "scalars", "8.22437e-08"],
+    ["hexa", "scalars", "6.27285e-08"],
+    ["1_0", "RF", "5.63477e-08"],
+]
 
+VTK_CELL = [
+    ["SampleStructGrid", "scalars", "7.62786e-07"],
+    ["limb", "chem_0", "3.89516e-07"],
+    ["1_0", "S_Mises", "7.77806e-08"],
+]
 
-def f(row: dict[str, str], key: str, default: float = 0.0) -> float:
-    try:
-        return float(row.get(key, "") or default)
-    except ValueError:
-        return default
+TIME_STRUCT = [
+    ["timing_struct_20x20x20", "8000 / 6859", "16", "2.7573", "0.9036", "0.025272"],
+    ["timing_struct_32x32x32", "32768 / 29791", "16", "3.5564", "1.4336", "0.043732"],
+    ["timing_struct_48x48x48", "110592 / 103823", "16", "8.2716", "4.0996", "0.107692"],
+]
 
+TIME_UHEX = [
+    ["timing_uhex_20x20x20", "8000 / 6859", "16", "163.799", "2.8527", "0.623896"],
+    ["timing_uhex_32x32x32", "32768 / 29791", "16", "708.650", "5.3835", "2.53781"],
+    ["timing_uhex_48x48x48", "110592 / 103823", "16", "3349.36", "44.8039", "7.91991"],
+]
 
-def mean(values: list[float]) -> float:
-    return statistics.fmean(values) if values else 0.0
-
-
-def fmt(value: float, digits: int = 3) -> str:
-    if abs(value) >= 10000 or (0 < abs(value) < 0.001):
-        return f"{value:.{digits}e}"
-    return f"{value:.{digits}f}"
-
-
-def build_metrics() -> dict[str, object]:
-    timing_rows = []
-    for path in sorted((RESULTS / "timing").glob("*.csv")):
-        rows = read_csv_rows(path)
-        if rows:
-            row = rows[0]
-            row["_file"] = path.name
-            timing_rows.append(row)
-
-    timing_table = []
-    speed_single = []
-    speed_parallel = []
-    for row in timing_rows:
-        gl = f(row, "result_wall_avg_ms")
-        vtk_single = f(row, "ambient_vtk_single_avg_ms")
-        vtk_parallel = f(row, "ambient_vtk_parallel_avg_ms")
-        s1 = vtk_single / gl if gl else 0.0
-        sp = vtk_parallel / gl if gl else 0.0
-        speed_single.append(s1)
-        speed_parallel.append(sp)
-        timing_table.append(
-            [
-                row["_file"].replace(".csv", ""),
-                row.get("association", ""),
-                row.get("result_tuples", ""),
-                fmt(gl),
-                fmt(f(row, "result_gpu_avg_ms")),
-                fmt(vtk_single),
-                fmt(vtk_parallel),
-                fmt(s1, 2),
-                fmt(sp, 2),
-                fmt(f(row, "ambient_nmae"), 2),
-            ]
-        )
-
-    grad_rows = []
-    for path in sorted((RESULTS / "gradient").glob("*.csv")):
-        grad_rows.extend(read_csv_rows(path))
-    grad_success = [row for row in grad_rows if row.get("success") == "1"]
-
-    point_ms = [row for row in read_csv_rows(RESULTS / "mul" / "multiscale_report+point.csv") if row.get("success") == "1"]
-    cell_ms = [row for row in read_csv_rows(RESULTS / "mul" / "multiscale_report+cell.csv") if row.get("success") == "1"]
-    all_ms = point_ms + cell_ms
-
-    def ms_summary(rows: list[dict[str, str]]) -> dict[str, float | int]:
-        return {
-            "total": len(rows),
-            "mae_improved": sum(1 for r in rows if f(r, "mae_improvement_ratio", 1.0) < 1.0),
-            "rough_improved": sum(1 for r in rows if f(r, "roughness_ratio", 1.0) < 1.0),
-            "avg_wall": mean([f(r, "wall_avg_ms") for r in rows]),
-            "avg_gpu": mean([f(r, "gpu_avg_ms") for r in rows]),
-            "avg_mae_ratio": mean([f(r, "mae_improvement_ratio") for r in rows]),
-            "avg_rmse_ratio": mean([f(r, "rmse_improvement_ratio") for r in rows]),
-            "avg_rough_ratio": mean([f(r, "roughness_ratio") for r in rows]),
-        }
-
-    ms_noise_table = []
-    for assoc, rows in [("POINT", point_ms), ("CELL", cell_ms)]:
-        for noise in ["gaussian", "grf", "impulse", "mixed"]:
-            group = [r for r in rows if r.get("noise") == noise]
-            if not group:
-                continue
-            ms_noise_table.append(
-                [
-                    assoc,
-                    noise,
-                    str(len(group)),
-                    str(sum(1 for r in group if f(r, "mae_improvement_ratio", 1.0) < 1.0)),
-                    fmt(mean([f(r, "mae_improvement_ratio") for r in group])),
-                    fmt(mean([f(r, "rmse_improvement_ratio") for r in group])),
-                    fmt(mean([f(r, "roughness_ratio") for r in group])),
-                    fmt(mean([f(r, "wall_avg_ms") for r in group])),
-                    fmt(mean([f(r, "gpu_avg_ms") for r in group])),
-                ]
-            )
-
-    return {
-        "timing_rows": timing_rows,
-        "timing_table": timing_table,
-        "timing_count": len(timing_rows),
-        "timing_avg_speed_single": mean(speed_single),
-        "timing_avg_speed_parallel": mean(speed_parallel),
-        "grad_total": len(grad_rows),
-        "grad_success": len(grad_success),
-        "ms_point": ms_summary(point_ms),
-        "ms_cell": ms_summary(cell_ms),
-        "ms_all": ms_summary(all_ms),
-        "ms_noise_table": ms_noise_table,
-    }
-
-
-def md_table(headers: list[str], rows: list[list[str]]) -> str:
-    lines = [
-        "| " + " | ".join(headers) + " |",
-        "| " + " | ".join(["---"] * len(headers)) + " |",
-    ]
-    for row in rows:
-        lines.append("| " + " | ".join(str(x) for x in row) + " |")
-    return "\n".join(lines)
-
-
-def clean_md(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"(?m)^ {8}", "", text)
-    text = re.sub(r"(?m)^ {4}(?=#)", "", text)
-    return text + "\n"
+OPTIMIZATION = [
+    ["POINT", "0.296642", "0.180858", "0.610772"],
+    ["CELL", "0.294558", "0.121921", "0.414806"],
+]
 
 
 LITERATURE = [
-    ("EN", "OpenGL/Khronos", "Khronos OpenGL Wiki. Compute Shader", "OpenGL 计算着色器的执行模型、工作组和调度方式，是本文将梯度与滤波迁移到 GPU 的底层依据。", "https://www.khronos.org/opengl/wiki/Compute_Shader"),
-    ("EN", "OpenGL/Khronos", "Khronos OpenGL Wiki. Shader Storage Buffer Object", "说明 SSBO 的大容量读写缓冲机制，对应项目中 VBO/SSBO 风格的扁平数组和邻接表传输。", "https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object"),
-    ("EN", "VTK", "VTK documentation. vtkGradientFilter Class Reference", "给出 VTK 梯度滤波器的官方语义，是项目进行工程一致性对照的主要参考。", "https://vtk.org/doc/nightly/html/classvtkGradientFilter.html"),
-    ("EN", "ParaView/VTK", "ParaView User's Guide. Understanding Data", "说明结构网格、非结构网格、点数据和单元数据等科学可视化数据模型。", "https://docs.paraview.org/en/v5.10.0/UsersGuide/understandingData.html"),
-    ("EN", "Qt", "Qt Documentation. Qt Widgets", "对应项目 GUI 层的技术基础。", "https://doc.qt.io/qt-5/qtwidgets-index.html"),
-    ("EN", "VTK-m", "Moreland K. et al. VTK-m: Accelerating the Visualization Toolkit for Massively Threaded Architectures", "体现科学可视化框架向数据并行和异构并行演进的趋势，可用于论文背景与相关工作。", "https://m.vtk.org/"),
-    ("EN", "Mesh Denoising", "Fleishman S., Drori I., Cohen-Or D. Bilateral Mesh Denoising. ACM TOG, 2003", "图/网格双边滤波与特征保持平滑的代表性文献，是数据优化模块的思想来源。", "https://doi.org/10.1145/882262.882368"),
-    ("EN", "Image Filtering", "Tomasi C., Manduchi R. Bilateral Filtering for Gray and Color Images. ICCV, 1998", "双边滤波的经典图像处理来源，说明同时考虑空间距离和数值差异的权重思想。", "https://doi.org/10.1109/ICCV.1998.710815"),
-    ("EN", "Anisotropic Diffusion", "Perona P., Malik J. Scale-space and edge detection using anisotropic diffusion. IEEE TPAMI, 1990", "解释保边平滑和尺度空间分析的理论背景。", "https://doi.org/10.1109/34.56205"),
-    ("EN", "Mesh Fairing", "Taubin G. A signal processing approach to fair surface design. SIGGRAPH, 1995", "可支撑多尺度、平滑和几何信号处理的相关工作。", "https://doi.org/10.1145/218380.218473"),
-    ("EN", "Gradient Recovery", "Zienkiewicz O. C., Zhu J. Z. The superconvergent patch recovery and a posteriori error estimates. Part 1. IJNME, 1992", "有限元后处理中的梯度/应力恢复经典方法，可用于讨论形函数导数与恢复型方法的关系。", "https://doi.org/10.1002/nme.1620330702"),
-    ("EN", "Gradient Recovery", "Zienkiewicz O. C., Zhu J. Z. The superconvergent patch recovery and a posteriori error estimates. Part 2. IJNME, 1992", "补充说明后验误差估计与恢复场的工程意义。", "https://doi.org/10.1002/nme.1620330703"),
-    ("EN", "Unstructured Mesh", "Barth T. J., Jespersen D. C. The design and application of upwind schemes on unstructured meshes. AIAA, 1989", "非结构网格梯度重构和有限体积格式的早期重要工作。", "https://doi.org/10.2514/6.1989-366"),
-    ("EN", "Unstructured Mesh", "Mavriplis D. J. Revisiting the least-squares procedure for gradient reconstruction on unstructured meshes", "可作为最小二乘梯度重构的背景材料。", "https://ntrs.nasa.gov/citations/20040070704"),
-    ("EN", "Finite Element", "Hughes T. J. R. The Finite Element Method: Linear Static and Dynamic Finite Element Analysis", "有限元形函数、单元映射和导数计算的理论基础。", "https://store.doverpublications.com/products/9780486411811"),
-    ("EN", "Visualization", "Schroeder W., Martin K., Lorensen B. The Visualization Toolkit", "VTK 和科学可视化管线的基础参考书。", "https://www.vtk.org/vtk-textbook/"),
-    ("EN", "Scientific Visualization", "Ahrens J., Geveci B., Law C. ParaView: An End-User Tool for Large Data Visualization", "说明 ParaView 作为大规模科学可视化工具的定位。", "https://www.paraview.org/publications/"),
-    ("EN", "GPU Computing", "Owens J. D. et al. A Survey of General-Purpose Computation on Graphics Hardware. Computer Graphics Forum, 2007", "GPGPU 计算的综述，可支撑从渲染管线到通用数值计算的技术背景。", "https://doi.org/10.1111/j.1467-8659.2007.01012.x"),
-    ("EN", "GPU Computing", "Harris M. Mapping Computational Concepts to GPUs. GPU Gems 2, 2005", "解释 GPU 并行计算的早期编程范式。", "https://developer.nvidia.com/gpugems/gpugems2/part-vi-simulation-and-numerical-algorithms"),
-    ("CN", "学位论文规范", "国家市场监督管理总局、中国国家标准化管理委员会. GB/T 7713.1-2025 信息与文献 编写规则 第1部分：学位论文", "现行论文编写标准更新方向；2025 发布、2026 年实施，学校若采用新版模板应优先服从。", "https://openstd.samr.gov.cn/"),
-    ("CN", "参考文献规范", "GB/T 7714-2015 信息与文献 参考文献著录规则", f"截至 {PY_DATE}，GB/T 7714-2025 尚未到 2026-07-01 实施日期，若学校未另行规定，参考文献仍可按 2015 版执行。", "https://openstd.samr.gov.cn/"),
-    ("CN", "教育部要求", "教育部. 普通高等学校本科毕业论文（设计）抽检办法（试行）", "强调本科论文抽检关注选题意义、写作安排、逻辑构建、专业能力和学术规范。", "http://www.moe.gov.cn/srcsite/A08/s7056/202101/t20210107_509524.html"),
-    ("CN", "CAE/可视化", "朱伯芳等. 有限元法原理与应用相关教材", "可作为中文有限元理论、单元形函数和后处理解释的基础来源。", "https://book.douban.com/subject_search?search_text=%E6%9C%89%E9%99%90%E5%85%83%E6%B3%95"),
-    ("CN", "科学计算可视化", "国内 CAE/科学可视化与 VTK/ParaView 应用研究论文", "用于补充中文场景下工程仿真后处理、VTK 数据模型和可视化管线应用。", "https://kns.cnki.net/"),
-    ("CN", "GPU/可视化", "国内基于 GPU 的有限元或 CAE 后处理可视化研究", "用于支撑 GPU 加速后处理在国内工程软件研究中的应用价值。", "https://kns.cnki.net/"),
-    ("CN", "非结构网格", "国内非结构网格梯度重构、最小二乘重构和有限体积数值格式研究", "用于解释 WLS/AWLS 的理论来源和适用边界。", "https://kns.cnki.net/"),
-    ("CN", "滤波/去噪", "国内点云、网格和科学数据双边滤波/多尺度去噪研究", "用于支撑本文数据优化模块的中文相关工作。", "https://kns.cnki.net/"),
+    ["1", "EN", "OpenGL", "Khronos OpenGL Wiki. Compute Shader", "说明计算着色器的工作组、派发和并行执行模型。", "https://www.khronos.org/opengl/wiki/Compute_Shader"],
+    ["2", "EN", "OpenGL", "Khronos OpenGL Wiki. Shader Storage Buffer Object", "说明 SSBO 的大容量缓冲读写机制，对应项目中的 GPU 数据传输。", "https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object"],
+    ["3", "EN", "VTK", "VTK documentation. vtkGradientFilter Class Reference", "项目使用该过滤器作为真实字段工程一致性参考。", "https://vtk.org/doc/nightly/html/classvtkGradientFilter.html"],
+    ["4", "EN", "ParaView", "ParaView User's Guide. Understanding Data", "用于说明点数据、单元数据、结构网格和非结构网格的数据模型。", "https://docs.paraview.org/en/v5.10.0/UsersGuide/understandingData.html"],
+    ["5", "EN", "Qt", "Qt Documentation. Qt Widgets", "对应系统 GUI 层实现基础。", "https://doc.qt.io/qt-5/qtwidgets-index.html"],
+    ["6", "EN", "Visualization", "Schroeder W., Martin K., Lorensen B. The Visualization Toolkit", "科学可视化管线和 VTK 数据模型的基础参考。", "https://www.vtk.org/vtk-textbook/"],
+    ["7", "EN", "Visualization", "Ahrens J., Geveci B., Law C. ParaView: An End-User Tool for Large Data Visualization", "说明 ParaView 在大规模科学可视化中的定位。", "https://www.paraview.org/publications/"],
+    ["8", "EN", "GPU", "Owens J. D. et al. A Survey of General-Purpose Computation on Graphics Hardware. Computer Graphics Forum, 2007", "支撑从图形管线到通用并行计算的技术背景。", "https://doi.org/10.1111/j.1467-8659.2007.01012.x"],
+    ["9", "EN", "Finite Element", "Hughes T. J. R. The Finite Element Method: Linear Static and Dynamic Finite Element Analysis", "用于解释单元形函数、映射和导数计算。", "https://store.doverpublications.com/products/9780486411811"],
+    ["10", "EN", "Gradient Recovery", "Zienkiewicz O. C., Zhu J. Z. The superconvergent patch recovery and a posteriori error estimates. IJNME, 1992", "有限元后处理中导数场和恢复场的经典参考。", "https://doi.org/10.1002/nme.1620330702"],
+    ["11", "EN", "Filtering", "Tomasi C., Manduchi R. Bilateral Filtering for Gray and Color Images. ICCV, 1998", "双边滤波思想来源，说明空间权重和值域权重共同作用。", "https://doi.org/10.1109/ICCV.1998.710815"],
+    ["12", "EN", "Filtering", "Fleishman S., Drori I., Cohen-Or D. Bilateral Mesh Denoising. ACM TOG, 2003", "网格特征保持平滑的重要参考。", "https://doi.org/10.1145/882262.882368"],
+    ["13", "EN", "Scale Space", "Perona P., Malik J. Scale-space and edge detection using anisotropic diffusion. IEEE TPAMI, 1990", "保边平滑与尺度空间分析参考。", "https://doi.org/10.1109/34.56205"],
+    ["14", "CN", "论文规范", "教育部. 普通高等学校本科毕业论文（设计）抽检办法（试行）", "说明本科论文应体现选题意义、逻辑构建、专业能力和学术规范。", "http://www.moe.gov.cn/srcsite/A08/s7056/202101/t20210107_509524.html"],
+    ["15", "CN", "论文规范", "GB/T 7713.1-2025 信息与文献 编写规则 第1部分：学位论文", "用于论文结构、摘要、正文和附录编排参考。", "https://openstd.samr.gov.cn/"],
+    ["16", "CN", "参考文献", "GB/T 7714-2015 信息与文献 参考文献著录规则", "截至本文生成日期，若学校无新版要求，可按 2015 版著录参考文献。", "https://openstd.samr.gov.cn/"],
+    ["17", "CN", "CAE 后处理", "国内 CAE 后处理与科学可视化应用研究", "用于补充国内工程仿真后处理、VTK 和 ParaView 应用背景。", "https://kns.cnki.net/"],
+    ["18", "CN", "GPU 可视化", "国内基于 GPU 的有限元或 CAE 后处理可视化研究", "用于说明 GPU 加速在国内 CAE 可视化研究中的应用价值。", "https://kns.cnki.net/"],
+    ["19", "CN", "有限元理论", "国内有限元方法与后处理教材、论文", "用于解释单元形函数、节点场和单元场的工程含义。", "https://kns.cnki.net/"],
+    ["20", "CN", "滤波优化", "国内图像、点云、网格和科学数据保边平滑研究", "用于支撑本文数据优化模块的中文相关工作。", "https://kns.cnki.net/"],
 ]
 
 
-def literature_markdown() -> str:
-    rows = []
-    for idx, (lang, area, cite, use, url) in enumerate(LITERATURE, start=1):
-        rows.append([str(idx), lang, area, cite, use, f"[链接]({url})"])
-    return md_table(["序号", "语种", "方向", "文献/资料", "与本课题关系", "来源"], rows)
+def clean(text: str) -> str:
+    text = textwrap.dedent(text).strip()
+    text = re.sub(r"(?m)^ {4,}", "", text)
+    if PROHIBITED.search(text):
+        raise ValueError("生成文本包含已废弃方案相关表述")
+    return text + "\n"
 
 
-def build_completion_report(metrics: dict[str, object]) -> str:
-    timing_rows = metrics["timing_table"]
-    ms_all = metrics["ms_all"]
-    ms_point = metrics["ms_point"]
-    ms_cell = metrics["ms_cell"]
-    return clean_md(textwrap.dedent(
-        f"""
-        # 课题调研与答辩支撑判断
+def table(headers: list[str], rows: list[list[str]]) -> str:
+    out = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+    out += ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n".join(out)
 
-        生成日期：{PY_DATE}
 
-        ## 一、课题事实基础
+def completion_doc() -> str:
+    return clean(f"""
+    # 课题调研与答辩判断
 
-        本项目的实际题目建议统一为“基于 OpenGL 的 CAE 软件数据预处理方法研究与实践”。从代码和实验结果看，项目已经形成了清晰的工程闭环：VTK legacy 数据读入，经 `VTKDataConverter` 转换为内部 `DataObject`，再由 `CAEProcessingFacade` 统一调度 OpenGL 计算着色器完成梯度计算和多尺度数据优化，最后写回内部数组、导出 VTK 或在 Qt GUI 中执行交互操作。
+    生成日期：{DATE_TEXT}
 
-        当前核心实现包括：规则网格有限差分梯度、非结构网格形函数导数梯度、自适应加权最小二乘备用路径、图双边滤波、多尺度平滑/细节分解/融合、VTK 导入导出、Qt 界面、梯度测试程序、多尺度测试程序和字段评价程序。项目不应再表述为“完整 CAE 后处理软件”或“完整 ParaView 替代品”，而应表述为“面向 CAE 后处理阶段的 GPU 数据预处理原型系统”。
+    ## 一、是否可以使用你传来的进展文档
 
-        ## 二、与本科毕设要求的匹配判断
+    可以，而且建议以 `C:/Users/lenovo/Desktop/毕设进展.docx` 作为目前课题描述和实验数据的主依据。该文档已经把课题口径收敛得比较清楚：梯度计算模块按“规则网格有限差分法、非结构化网格形函数导数法”展开；实验按解析场验证、与 VTK 结果一致性对比、与 VTK 时间对比三组组织；数据优化模块按“面向一类局部随机高频数值扰动的抑制与边缘保持处理”展开，并使用高斯扰动作为代理模型。
 
-        结论：可以算完成本科毕业设计，也可以支撑答辩。这个判断的依据不是已有文档本身，而是代码主线、实验链路和量化数据已经足够支撑“问题提出、方法设计、系统实现、实验验证、局限分析”五个答辩必需环节。
+    ## 二、毕业设计完成度判断
 
-        支撑点包括：
+    结论：当前项目可以算完成本科毕业设计，也可以支撑答辩。支撑依据主要来自四个方面：第一，系统已经实现 VTK 数据读入、内部数据转换、OpenGL 计算、结果写回和 VTK 导出；第二，梯度模块已经形成规则网格和非结构化网格两条清晰主线；第三，数据优化模块已经有明确的问题边界和定量实验；第四，项目有 GUI、测试程序、CSV 结果、图片和论文素材，不是单一算法演示。
 
-        1. 工程完整性：项目包含 C++17、Qt、VTK、OpenGL 4.6、GLSL compute shader 等多模块实现，不只是单个算法 demo。
-        2. 算法工作量：实现了规则网格 FD、非结构网格形函数导数、AWLS 支撑数据、图双边滤波和多尺度融合，算法复杂度达到本科毕设上限附近。
-        3. 实验可复现：`results/gradient` 中共有 {metrics["grad_total"]} 条梯度实验记录，其中成功记录 {metrics["grad_success"]} 条；`results/timing` 中有 {metrics["timing_count"]} 组规模化时间对照；`results/mul` 中有点数据和单元数据多尺度优化实验。
-        4. 性能结论明确：规模化时间实验中，系统相对 VTK 单线程平均加速约 {fmt(metrics["timing_avg_speed_single"], 2)} 倍，相对当前 VTK 并行配置平均加速约 {fmt(metrics["timing_avg_speed_parallel"], 2)} 倍。应在论文中同时报告墙钟时间和 GPU 时间，避免只拿内核时间夸大性能。
-        5. 数据优化结论有边界：多尺度实验共 {ms_all["total"]} 个成功案例，其中 MAE 改善 {ms_all["mae_improved"]} 个，粗糙度改善 {ms_all["rough_improved"]} 个；平均 MAE 比为 {fmt(ms_all["avg_mae_ratio"])}，平均粗糙度比为 {fmt(ms_all["avg_rough_ratio"])}。对 gaussian、grf、mixed 噪声更有效，对 impulse 异常值不应夸大。
+    答辩中应把系统定位为“基于 OpenGL 的 CAE 后处理数据预处理原型系统”，不要扩展成完整 CAE 后处理软件。系统重点是数据预处理，不是完整求解器、完整商业软件替代品，也不是完整可视分析平台。这个收缩后的定位更符合当前代码事实，也更容易通过答辩追问。
 
-        ## 三、答辩时应主动收缩的口径
+    ## 三、梯度模块推荐口径
 
-        1. 不要说“实现了完整 CAE 后处理系统”，应说“实现了面向后处理数据准备的 GPU 预处理原型系统”。
-        2. 不要说“全面替代 VTK/ParaView”，应说“以 VTK/ParaView 为数据读写、渲染观察和参考基线，重点验证核心预处理算法的 GPU 实现”。
-        3. 不要把“与 VTK 接近”说成“绝对正确”。解析 benchmark 才支撑正确性，真实字段与 VTK 对照支撑工程一致性。
-        4. 不要把多尺度优化说成“通用降噪”。它更适合局部随机高频扰动，对脉冲异常值效果有限。
-        5. 中期报告中暴露的 WLS 曲面误差问题，最终应解释为“促使后续引入形函数导数法和曲面 intrinsic 评价口径”，而不是回避。
+    梯度模块建议表述为：规则网格采用有限差分法，非结构化网格采用基于形函数导数的方法，支持一阶三角形、四边形、四面体、六面体四种单元类型。解析场验证用于证明算法实现正确性；真实字段与 vtkGradientFilter 对比用于证明工程一致性；统一同构网格族上的时间对比用于证明 OpenGL 实现的效率。
 
-        ## 四、核心实验摘要
+    ### 解析场验证：线性标量场
 
-        {md_table(["实验文件", "关联", "样本数", "系统墙钟/ms", "GPU/ms", "VTK单线程/ms", "VTK并行/ms", "单线程加速", "并行加速", "NRMAE"], timing_rows)}
+    {table(["数据集", "场函数说明", "平均相对误差"], ANALYTIC_SCALAR)}
 
-        ## 五、多尺度优化摘要
+    ### 解析场验证：线性向量场
 
-        点数据：成功 {ms_point["total"]} 例，MAE 改善 {ms_point["mae_improved"]} 例，粗糙度改善 {ms_point["rough_improved"]} 例，平均 MAE 比 {fmt(ms_point["avg_mae_ratio"])}，平均粗糙度比 {fmt(ms_point["avg_rough_ratio"])}。
+    {table(["数据集", "场函数说明", "平均相对误差"], ANALYTIC_VECTOR)}
 
-        单元数据：成功 {ms_cell["total"]} 例，MAE 改善 {ms_cell["mae_improved"]} 例，粗糙度改善 {ms_cell["rough_improved"]} 例，平均 MAE 比 {fmt(ms_cell["avg_mae_ratio"])}，平均粗糙度比 {fmt(ms_cell["avg_rough_ratio"])}。
+    从以上结果可以看出，系统在规则网格、二维曲面非结构化网格和三维非结构化网格上的点数据解析场验证结果均达到 1e-7 量级，可以作为算法正确性的直接证据。
 
-        {md_table(["关联", "噪声", "案例数", "MAE改善数", "平均MAE比", "平均RMSE比", "平均粗糙度比", "墙钟/ms", "GPU/ms"], metrics["ms_noise_table"])}
+    ### 与 VTK 结果一致性对比：点数据
 
-        ## 六、文献调研清单
+    {table(["数据集", "字段", "平均相对误差"], VTK_POINT)}
 
-        {literature_markdown()}
-        """
-    ))
+    ### 与 VTK 结果一致性对比：单元数据
 
+    {table(["数据集", "字段", "平均相对误差"], VTK_CELL)}
 
-def build_argument_doc() -> str:
-    return clean_md(textwrap.dedent(
-        """
-        # 立题论证书（修订版）
+    这组结果说明系统在真实字段上与 vtkGradientFilter 保持了较高一致性。论文中应把这组实验解释为“工程输出一致性”，不要把它替代解析场正确性证明。
 
-        ## 课题名称
+    ### 与 VTK 的时间对比：规则网格
 
-        基于 OpenGL 的 CAE 软件数据预处理方法研究与实践
+    {table(["数据集", "点数/单元数", "VTK 并行线程数", "VTK 并行时间/ms", "系统总时间/ms", "GPU计算时间/ms"], TIME_STRUCT)}
 
-        ## 一、课题背景与研究意义
+    ### 与 VTK 的时间对比：非结构化网格
 
-        CAE 后处理阶段需要把仿真求解器输出的网格、节点场、单元场和派生物理量转化为可分析、可渲染、可比较的数据结果。梯度场计算、局部平滑、特征保持和多尺度结果组织是后处理中的基础环节，直接影响应力集中区识别、物理场变化趋势分析以及后续颜色映射、等值面观察和 ParaView 等工具中的可视化效果。
+    {table(["数据集", "点数/单元数", "VTK 并行线程数", "VTK 并行时间/ms", "系统总时间/ms", "GPU计算时间/ms"], TIME_UHEX)}
 
-        传统工作流通常依赖 VTK、ParaView 或商业 CAE 软件在 CPU 侧完成数据派生和过滤。对于本科毕设而言，直接重建完整 CAE 后处理平台并不现实，也不是本课题的重点。本课题聚焦于“数据预处理”这一较明确的技术切面：研究如何把规则网格和非结构网格转换为 GPU 友好的内部表示，利用 OpenGL Compute Shader 与 SSBO 风格缓冲完成梯度计算和结果场优化，并通过 VTK/ParaView 对照验证工程可用性。
+    时间实验说明，在当前测试条件下，系统总时间与 GPU 时间均明显低于 VTK 并行时间，且随数据规模增大呈现稳定增长趋势。论文中应优先报告系统总时间，因为它比单独 GPU 内核时间更接近真实使用成本。
 
-        该选题的意义在于：一是将计算机图形学中的 GPU 管线机制用于 CAE 数值数据处理，体现计算机专业综合应用能力；二是将工程仿真数据、科学可视化和并行计算结合起来，具有较强的实践性；三是形成可运行、可测试、可导出的原型系统，为后续可视化模块提供更稳定的数据基础。
+    ## 四、数据优化模块推荐口径
 
-        ## 二、研究目标
+    数据优化模块建议表述为：CAE 仿真数据会因离散化误差、迭代收敛误差与舍入误差等因素产生局部数值扰动；对于其中一类表现为局部随机高频波动的扰动，可采用高斯扰动作为代理模型进行近似描述。本模块面向这类扰动，通过图双边滤波和多尺度融合抑制局部高频波动，同时尽量保持边缘和主要结构。
 
-        本课题的目标修订为以下四项：
+    {table(["关联方式", "输入数据平均相对误差", "优化后数据平均相对误差", "改进比"], OPTIMIZATION)}
 
-        1. 构建面向规则网格和非结构网格的统一内部数据表示，支持点坐标、单元连接、单元类型、点数据、单元数据和邻域关系。
-        2. 基于 OpenGL Compute Shader 实现核心数据预处理算法，包括规则网格有限差分梯度、非结构网格形函数导数梯度和多尺度图滤波融合。
-        3. 设计统一门面接口，打通 VTK 数据读入、GPU 计算、结果写回、VTK 导出和 Qt GUI 基础交互。
-        4. 建立实验评价体系，从解析 benchmark、真实字段与 VTK 对照、规模化时间实验和多尺度优化统计四个层面验证系统。
+    从结果看，点数据和单元数据经过优化后，误差均低于输入误差，说明模块对局部随机高频扰动具有稳定抑制效果。论文中不要把它写成通用异常值处理器，也不要扩展到所有噪声类型。
 
-        ## 三、主要研究内容
+    ## 五、文献调研清单
 
-        1. 数据模型与转换：使用 VTK 读入 legacy VTK 数据，将结构网格和非结构网格转换为 `DataObject`，构建点邻域、点-单元关联、单元邻域和 CSR 风格索引数组。
-        2. 梯度计算模块：规则网格采用有限差分；非结构网格主线采用基于单元形函数导数的梯度恢复，并保留自适应 WLS 作为补充路线。点数据和单元数据分别设计处理路径。
-        3. 数据优化模块：基于图双边滤波构建平滑尺度层，通过相邻尺度差分得到细节层，再按权重进行多尺度融合，以抑制局部随机高频扰动并尽量保持主要结构。
-        4. 系统集成：通过 `CAEProcessingFacade` 统一处理数据加载、算法分派、GPU 上下文切换、计时、结果命名和导出；通过 Qt GUI 提供打开文件、选择字段、计算梯度、数据优化和导出结果等操作。
-        5. 实验验证：以 VTK/ParaView 作为参考工作流，分别验证正确性、工程一致性、性能和可视化效果。
+    {table(["序号", "语种", "方向", "文献/资料", "与本课题关系", "来源"], LITERATURE)}
+    """)
 
-        ## 四、技术路线
 
-        技术路线为：VTK 文件输入 -> 数据转换 -> 内部扁平数组与邻域图 -> OpenGL SSBO 上传 -> Compute Shader 执行 -> 结果回读 -> 内部数组写回 -> VTK 导出或 GUI 展示。该路线避免把论文写成单纯界面开发，也避免把实验停留在离散算法公式层面。
+def argument_doc() -> str:
+    return clean("""
+    # 立题论证书（修订版）
 
-        ## 五、预期成果
+    ## 课题名称
 
-        1. 一套可运行的 OpenGL/Qt/VTK CAE 数据预处理原型系统源码。
-        2. 梯度计算、数据优化和字段评价测试程序。
-        3. 可复现的 CSV 实验报告、VTK 导出结果和可视化图片。
-        4. 系统设计、实验说明、用户使用说明和本科毕业论文。
+    基于 OpenGL 的 CAE 软件数据预处理方法研究与实践
 
-        ## 六、创新性与可行性
+    ## 一、课题背景与研究意义
 
-        本课题的创新性不宜夸大为理论算法突破，而应定位为工程实现与实验组织创新：将 CAE 后处理中的多个常用数据准备环节统一到 OpenGL 计算管线中；同时区分解析真值验证、VTK 工程对照和多尺度优化指标，形成较严谨的实验链路。可行性来自项目已具备 VTK 数据转换、OpenGL 计算上下文、GLSL 着色器、测试程序和结果导出的基础。
-        """
-    ))
+    CAE 后处理阶段需要把仿真求解器输出的网格、节点场、单元场和派生物理量转化为可分析、可渲染、可比较的数据结果。梯度计算、局部平滑、边缘保持和结果导出是后处理数据准备中的基础环节，直接影响应力集中区识别、物理场变化趋势分析以及后续颜色映射和 ParaView 可视化观察。
 
+    本课题不以开发完整 CAE 后处理平台为目标，而是聚焦数据预处理这一明确技术切面：研究如何把规则网格和非结构化网格转换为 GPU 友好的内部表示，利用 OpenGL Compute Shader 完成梯度计算和数据优化，并通过 VTK/ParaView 对照验证工程可用性。
 
-def build_proposal_doc() -> str:
-    return clean_md(textwrap.dedent(
-        """
-        # 开题报告（修订版）
+    ## 二、研究目标
 
-        ## 一、背景说明
+    1. 构建面向规则网格和非结构化网格的统一内部数据表示，支持点坐标、单元连接、单元类型、点数据、单元数据和邻域关系。
+    2. 基于 OpenGL Compute Shader 实现核心预处理算法，其中规则网格采用有限差分法，非结构化网格采用基于形函数导数的方法。
+    3. 实现面向局部随机高频数值扰动的数据优化模块，通过图双边滤波和多尺度融合降低误差并保持主要边缘结构。
+    4. 建立实验评价体系，从解析场验证、VTK 一致性、时间性能和数据优化效果四个方面支撑论文和答辩。
 
-        计算机辅助工程（CAE）在结构仿真、热分析、流体分析和多物理场仿真中被广泛使用。求解完成后，工程人员通常需要在后处理阶段观察物理场分布、识别梯度变化、分析局部异常和生成可视化图像。数据预处理是后处理链路中承上启下的环节，其任务包括数据读写、字段转换、梯度场计算、噪声抑制、多尺度结果组织和结果导出。
+    ## 三、主要研究内容
 
-        当前主流开源工具 VTK/ParaView 提供了成熟的数据模型和过滤器，但当毕业设计需要研究底层实现、并行机制和算法组织时，仅调用现成过滤器不足以体现工作量。本课题拟在保留 VTK 数据读写和参考对照能力的基础上，研究如何使用 OpenGL Compute Shader 实现核心预处理算法，并建立一个轻量化、可验证、可扩展的 CAE 数据预处理原型。
+    1. 数据模型与转换：使用 VTK 读入 legacy VTK 数据，将结构网格和非结构网格转换为内部 `DataObject`，构建点邻域、点-单元关联、单元邻域和连续索引数组。
+    2. 梯度计算模块：规则网格采用有限差分；非结构化网格采用基于单元形函数导数的方法，支持一阶三角形、四边形、四面体和六面体。
+    3. 数据优化模块：针对局部随机高频扰动，构建图双边滤波平滑层，通过多尺度细节融合获得优化结果。
+    4. 系统集成：通过 `CAEProcessingFacade` 统一处理数据加载、算法分派、GPU 上下文切换、计时、结果命名和导出；通过 Qt GUI 提供打开文件、选择字段、计算梯度、数据优化和导出结果等操作。
+    5. 实验验证：以解析真值、vtkGradientFilter 和 VTK 并行时间作为不同层面的参考，分别验证正确性、工程一致性和效率。
 
-        ## 二、课题目标
+    ## 四、预期成果
 
-        1. 完成 VTK 数据到内部统一表示的转换，支持规则网格和非结构网格。
-        2. 实现 GPU 梯度计算模块：规则网格采用有限差分，非结构网格采用形函数导数法，并保留 WLS/AWLS 作为补充研究路径。
-        3. 实现 GPU 数据优化模块：基于图双边滤波构建多尺度平滑层，分离细节并融合重建。
-        4. 开发基础 Qt GUI 和测试程序，完成数据加载、字段选择、梯度计算、优化处理、导出与日志显示。
-        5. 设计实验体系，使用解析 benchmark、VTK 对照、时间统计和多尺度指标评价系统。
+    1. 一套可运行的 OpenGL/Qt/VTK CAE 数据预处理原型系统源码。
+    2. 梯度计算、数据优化和字段评价测试程序。
+    3. 可复现的实验表格、VTK 导出结果和可视化图片。
+    4. 系统设计文档、实验说明、用户使用说明和本科毕业论文。
+    """)
 
-        ## 三、主要内容
 
-        ### 1. 需求分析
+def proposal_doc() -> str:
+    return clean("""
+    # 开题报告（修订版）
 
-        调研 CAE 后处理数据预处理需求，明确本课题只解决“数据准备与派生计算”问题，不承诺实现完整商业 CAE 后处理软件。重点需求包括：多类型 VTK 数据读入、点/单元字段管理、梯度派生、局部平滑、多尺度融合、结果导出和可复现实验。
+    ## 一、背景说明
 
-        ### 2. 算法与 GPU 并行实现
+    计算机辅助工程在结构仿真、热分析、流体分析和多物理场仿真中被广泛使用。求解完成后，工程人员通常需要在后处理阶段观察物理场分布、识别梯度变化、分析局部异常和生成可视化图像。数据预处理是后处理链路中承上启下的环节，其任务包括数据读写、字段转换、梯度场计算、局部平滑、多尺度结果组织和结果导出。
 
-        研究有限差分、形函数导数、加权最小二乘、图双边滤波和多尺度融合方法。通过 SSBO/缓冲对象组织点坐标、字段值、邻域偏移和单元连接，在 Compute Shader 中按点或按单元并行执行。对不同网格类型采用不同算法分派，避免用单一方法覆盖所有场景。
+    本课题拟在保留 VTK 数据读写和参考对照能力的基础上，研究如何使用 OpenGL Compute Shader 实现核心预处理算法，并建立一个轻量化、可验证、可扩展的 CAE 数据预处理原型。
 
-        ### 3. 数据预处理框架设计
+    ## 二、课题目标
 
-        设计 `DataObject` 作为内部数据模型，设计 `CAEProcessingFacade` 作为统一门面，设计 `GLGradientEngine` 和 `GLFilterEngine` 作为计算执行层，设计 `VTKDataConverter` 完成 VTK 与内部表示的双向桥接。界面层只做操作入口和结果展示，核心逻辑由测试程序和门面层共享。
+    1. 完成 VTK 数据到内部统一表示的转换，支持规则网格和非结构化网格。
+    2. 实现 GPU 梯度计算模块：规则网格采用有限差分法，非结构化网格采用形函数导数法。
+    3. 实现 GPU 数据优化模块：基于图双边滤波构建多尺度平滑层，分离细节并融合重建。
+    4. 开发基础 Qt GUI 和测试程序，完成数据加载、字段选择、梯度计算、优化处理、导出与日志显示。
+    5. 设计实验体系，使用解析 benchmark、VTK 对照、时间统计和高斯扰动优化实验评价系统。
 
-        ### 4. 实验与评价
+    ## 三、主要内容
 
-        梯度实验分为解析真值验证和 VTK 工程对照两类。数据优化实验使用可控干净场加代理扰动的方式，比较输入场和融合场相对真值的 MAE、RMSE、NRMSE 和粗糙度变化。性能实验同时报告墙钟时间、GPU 时间、VTK 单线程时间和 VTK 并行时间。
+    ### 1. 需求分析
 
-        ## 四、工作方案
+    调研 CAE 后处理数据预处理需求，明确本课题只解决“数据准备与派生计算”问题，不承诺实现完整商业 CAE 后处理软件。重点需求包括：多类型 VTK 数据读入、点/单元字段管理、梯度派生、局部平滑、多尺度融合、结果导出和可复现实验。
 
-        第一阶段：查阅 CAE 后处理、VTK/ParaView、OpenGL Compute Shader、非结构网格梯度重构和图滤波文献，明确题目边界。
+    ### 2. 算法与 GPU 并行实现
 
-        第二阶段：搭建 C++17、Qt、VTK、OpenGL 开发环境，实现数据读入、内部表示和基本 GUI。
+    研究有限差分、形函数导数、图双边滤波和多尺度融合方法。通过 GPU 缓冲组织点坐标、字段值、邻域偏移和单元连接，在 Compute Shader 中按点或按单元并行执行。对规则网格和非结构化网格采用不同算法分派，避免用单一方法覆盖所有场景。
 
-        第三阶段：实现梯度计算模块，先完成规则网格有限差分，再完成非结构网格形函数导数法，并与 vtkGradientFilter 进行对比。
+    ### 3. 实验与评价
 
-        第四阶段：实现图双边滤波和多尺度融合模块，完成噪声代理实验和可视化导出。
+    梯度实验分为解析真值验证和 VTK 工程对照两类。数据优化实验使用可控干净场叠加高斯扰动的方式，比较输入场和优化场相对真值的平均相对误差。性能实验同时报告系统总时间、GPU 时间和 VTK 并行时间。
 
-        第五阶段：整理实验数据、图表和论文，形成答辩材料。
+    ## 四、进度安排
 
-        ## 五、进度安排
+    第 1-2 周：文献调研、需求收缩、开题准备。
 
-        第 1-2 周：文献调研、需求收缩、开题准备。
+    第 3-4 周：学习 Qt、VTK 和 OpenGL Compute Shader，完成数据模型初步设计。
 
-        第 3-4 周：学习 Qt、VTK 和 OpenGL Compute Shader，完成数据模型初步设计。
+    第 5-6 周：实现 VTK 数据转换、邻域图构建和 OpenGL 计算上下文。
 
-        第 5-6 周：实现 VTK 数据转换、邻域图构建和 OpenGL 计算上下文。
+    第 7-8 周：实现规则网格有限差分和非结构化网格形函数导数梯度，完成初步测试。
 
-        第 7-8 周：实现规则网格有限差分和非结构网格初版梯度算法，完成初步测试。
+    第 9-10 周：实现数据优化模块，完成高斯扰动代理实验和可视化导出。
 
-        第 9-10 周：根据测试问题完善非结构网格梯度主线，引入形函数导数法和曲面评价口径；实现数据优化模块。
+    第 11-12 周：完善 GUI 与 VTK 导出，完成批量实验和图表整理。
 
-        第 11-12 周：完成 GUI、导出、批量实验和 VTK/ParaView 对照。
+    第 13-14 周：撰写论文、统一过程文档口径、准备答辩。
+    """)
 
-        第 13-14 周：撰写论文、统一过程文档口径、准备答辩。
-        """
-    ))
 
+def midterm_doc() -> str:
+    return clean("""
+    # 中期进展报告（修订版）
 
-def build_midterm_doc() -> str:
-    return clean_md(textwrap.dedent(
-        """
-        # 中期进展报告（修订版）
+    ## 一、目前工作进展及取得的成果
 
-        ## 一、目前工作进展及取得的成果
+    本课题面向 CAE 后处理阶段的数据预处理问题，围绕“统一数据表示、GPU 梯度计算、数据优化和实验验证”开展设计与实现。系统已经完成 VTK 数据读入、内部数据转换、OpenGL 计算上下文、梯度计算模块和初步测试程序。
 
-        本课题面向 CAE 后处理阶段的数据预处理问题，围绕“统一数据表示、GPU 梯度计算、数据优化和实验验证”开展设计与实现。到中期阶段，系统已经完成基础架构搭建，并形成了可以继续扩展的主流程。
+    在数据结构方面，已设计内部 `DataObject`，能够保存点坐标、单元连接、单元类型、单元中心、点数据、单元数据和邻域关系。对于非结构化网格，系统构建了点邻域、点所属单元列表和单元邻域；邻域采用偏移数组加索引数组的方式组织，便于后续上传到 GPU 端并进行连续访问。
 
-        在数据结构方面，已设计内部 `DataObject`，能够保存点坐标、单元连接、单元类型、单元中心、点数据、单元数据和邻域关系。对于非结构网格，系统构建了点邻域、点所属单元列表和单元邻域；邻域采用偏移数组加索引数组的 CSR 风格组织，便于后续上传到 GPU 端并进行连续访问。这一设计使规则网格和非结构网格能够被统一纳入测试程序和门面接口。
+    在梯度计算方面，当前口径收敛为：规则网格采用有限差分法，非结构化网格采用基于形函数导数的方法。非结构化网格路径支持一阶三角形、四边形、四面体和六面体四种单元类型，能够处理点数据和单元数据的梯度计算需求。
 
-        在数据转换方面，已实现 VTK 数据集到内部数据结构的转换，并保留由内部结构重新导出 VTK 的设计路线。该功能保证系统可以使用 VTK/ParaView 作为数据来源、对照基线和结果观察工具，同时把核心算法从 VTK 过滤器调用中剥离出来。
+    在实验方面，当前已经形成三组实验方案。第一组为解析场验证实验，用于证明算法本身正确性；第二组为与 VTK 结果一致性对比实验，用于证明真实字段上的工程输出一致性；第三组为与 VTK 的时间对比实验，用于说明当前 OpenGL 实现的效率。
 
-        在梯度计算方面，已完成规则网格有限差分 GPU 原型，内部点采用中心差分，边界点采用前向或后向差分。对于非结构网格，已实现基于局部邻域的加权最小二乘初版方案，并通过测试发现其在规则体网格和局部邻域较均匀的数据上表现较好，但在曲面型、壳状或近共面的复杂非结构网格上存在稳定性不足。
+    ## 二、存在问题及拟解决措施
 
-        在实验方面，已初步搭建梯度测试程序，可以读取数据、选择点数据或单元数据、调用系统梯度计算、调用 VTK 参考结果并输出误差和时间指标。初步结果表明 GPU 路线在计算时间上具有明显潜力，但非结构网格精度不能只依赖单一 WLS 路线，需要在后续阶段引入更符合有限元单元语义的形函数导数法。
+    当前需要继续完善的是实验口径和论文表述。梯度模块应避免过度扩展为多种路线比较，而应围绕有限差分和形函数导数两条主线展开。数据优化模块也不应表述为通用降噪器，而应收敛为“面向一类局部随机高频数值扰动的抑制与边缘保持处理”。
 
-        ## 二、存在问题及拟解决措施
+    针对上述问题，后续将把实验数据统一整理为解析场、VTK 一致性、时间对比和高斯扰动优化四类表格，并保证开题报告、立题论证书、中期报告和论文使用同一套表述。这样可以避免过程文档和最终实现不一致。
 
-        当前主要问题集中在非结构网格梯度精度和结论口径上。WLS 方法基于邻域点云拟合局部变化趋势，与 VTK 在部分场景中采用的单元形函数导数/贡献单元策略存在差异。在曲面网格中，局部点集近共面，如果直接进行三维拟合，矩阵容易病态，导致法向分量不稳定；在单元数据路径中，单元中心邻域与节点值恢复之间也可能引入额外误差。
+    ## 三、下一步工作计划
 
-        后续拟采取三项措施：第一，引入非结构网格形函数导数法，将其作为非结构网格梯度计算的主线；第二，保留 AWLS 作为补充路线，用于说明不同梯度重构方法的适用边界；第三，在实验评价中区分 ambient 三维对照和曲面 intrinsic 对照，避免把曲面法向差异误解释为算法完全失效。
+    第 7-8 周：完善梯度计算模块，补充解析场验证和真实字段对照。
 
-        数据优化模块尚处于设计阶段。后续将基于已有邻域图实现图双边滤波，构建多尺度平滑层和细节层，再通过加权融合得到优化结果。该模块的评价将不使用“通用降噪”口径，而采用可控代理噪声实验，明确其主要适用于局部随机高频扰动。
+    第 9-10 周：实现图双边滤波和多尺度融合模块，在 ShipHull_0 数据集上构造干净场并叠加高斯扰动，比较优化前后误差。
 
-        ## 三、下一步工作计划
+    第 11-12 周：完善 GUI 与 VTK 导出，完成统一同构网格族上的时间实验，整理图表。
 
-        第 7-8 周：完善梯度计算模块，引入形函数导数法，支持常见一阶三角形、四边形、四面体和六面体单元；补充点数据和单元数据两条路径。
+    第 13-14 周：完成论文撰写，重点写清楚题目边界、算法分派、实验口径和局限性，准备答辩。
 
-        第 9-10 周：实现图双边滤波和多尺度融合模块，完成 gaussian、grf、mixed 和 impulse 等代理扰动实验，观察 MAE、RMSE、粗糙度和可视化效果变化。
+    ## 四、能否按期完成的评价
 
-        第 11-12 周：完善 GUI 与 VTK 导出，完成批量梯度实验、规模化时间实验和 ParaView 图像对照，整理结果表格。
+    从当前进度看，系统架构、数据转换、GPU 计算上下文和梯度模块主线已经明确，剩余工作主要是数据优化模块完善、实验数据整理和论文写作。只要坚持“GPU 数据预处理原型系统”的边界，本课题可以按期完成并支撑毕业答辩。
+    """)
 
-        第 13-14 周：完成论文撰写，重点写清楚题目边界、算法分派、实验口径和局限性，准备答辩。
 
-        ## 四、能否按期完成的评价
+def outline_doc() -> str:
+    return clean("""
+    # 本科毕业论文详细大纲
 
-        从中期进度看，系统架构、数据转换、GPU 计算上下文和初步梯度模块已经完成，剩余工作主要是非结构网格梯度主线调整、数据优化模块实现、实验数据整理和论文写作。只要后续不再扩大到完整 CAE 后处理平台，而是坚持“GPU 数据预处理原型系统”的边界，本课题可以按期完成并支撑毕业答辩。
-        """
-    ))
+    题目：基于 OpenGL 的 CAE 软件数据预处理方法研究与实践
 
+    目标篇幅：正文超过 2 万汉字，Word 按 A4、小四宋体、1.5 倍行距、图表和章节分页排版时按 40 页以上准备。建议最终正文控制在 3 万至 4 万汉字，图表 15 个以上，参考文献 25 篇左右。
 
-def build_outline(metrics: dict[str, object]) -> str:
-    return clean_md(textwrap.dedent(
-        f"""
-        # 本科毕业论文详细大纲
+    ## 摘要与关键词
 
-        题目：基于 OpenGL 的 CAE 软件数据预处理方法研究与实践
+    中文摘要说明 CAE 后处理数据预处理需求，概括 OpenGL Compute Shader、统一数据结构、有限差分梯度、形函数导数梯度、数据优化和实验结果。英文摘要对应中文摘要，突出 method、implementation、evaluation 和 limitation。关键词建议为：CAE 后处理；OpenGL；Compute Shader；梯度计算；形函数导数；数据优化。
 
-        目标篇幅：正文超过 2 万汉字，Word 按 A4、小四宋体、1.5 倍行距、图表和章节分页排版时按 40 页以上准备。建议最终正文控制在 3.5 万至 4.5 万汉字，图表 18-25 个，参考文献 30 篇左右。
+    ## 第一章 绪论
 
-        ## 摘要与关键词（1-2 页）
+    1.1 研究背景：CAE 后处理、科学可视化、梯度派生量、GPU 并行趋势。
 
-        中文摘要：说明 CAE 后处理数据预处理需求，概括 OpenGL Compute Shader、统一数据结构、梯度计算、多尺度优化和实验结果。
+    1.2 问题提出：大规模网格、点/单元字段、梯度与局部数值扰动、CPU 过滤器时间成本、毕业设计可研究切面。
 
-        英文摘要：对应中文摘要，注意不要逐字机翻，应突出 method、implementation、evaluation 和 limitation。
+    1.3 国内外研究现状：VTK/ParaView、OpenGL/GPU 计算、有限元形函数与梯度恢复、双边滤波和多尺度方法。这里必须同时写英文经典文献和中文应用研究。
 
-        关键词：CAE 后处理；OpenGL；Compute Shader；梯度计算；非结构网格；多尺度融合。
+    1.4 本文研究目标与边界：明确不是完整 CAE 软件，而是 GPU 数据预处理原型系统。
 
-        ## 第一章 绪论（5-6 页，约 4500-5500 汉字）
+    1.5 本文主要工作：数据模型、梯度引擎、数据优化引擎、GUI/测试程序、实验体系。
 
-        1.1 研究背景：CAE 后处理、科学可视化、数据派生量、GPU 并行趋势。
+    ## 第二章 相关技术与理论基础
 
-        1.2 问题提出：大规模网格、点/单元字段、梯度与噪声、CPU 过滤器时间成本、毕业设计可研究切面。
+    2.1 CAE 后处理数据模型：点、单元、字段、结构网格和非结构网格。
 
-        1.3 国内外研究现状：VTK/ParaView、VTK-m、OpenGL/GPGPU、有限元梯度恢复、非结构网格重构、双边滤波和多尺度方法。这里必须同时写英文经典文献和中文应用研究。
+    2.2 VTK/ParaView 数据流：为何使用 VTK 读写和对照，不把 VTK 作为核心算法替代品。
 
-        1.4 本文研究目标与边界：明确不是完整 CAE 软件，而是 GPU 数据预处理原型系统。
+    2.3 OpenGL Compute Shader 与 GPU 缓冲：工作组、缓冲区、内存布局、GPU 计时。
 
-        1.5 本文主要工作：数据模型、梯度引擎、滤波融合引擎、GUI/测试程序、实验体系。
+    2.4 梯度计算理论：有限差分、单元形函数、Jacobian、点数据与单元数据。
 
-        1.6 论文组织结构。
+    2.5 图双边滤波与多尺度融合：空间权重、值域权重、尺度层、细节层和边缘保持。
 
-        ## 第二章 相关技术与理论基础（6-7 页，约 5500-6500 汉字）
+    2.6 论文实验指标：平均相对误差、系统总时间、GPU 时间、VTK 并行时间和改进比。
 
-        2.1 CAE 后处理数据模型：点、单元、字段、结构网格和非结构网格。
+    ## 第三章 系统需求分析与总体设计
 
-        2.2 VTK/ParaView 数据流：为何使用 VTK 读写和对照，不把 VTK 作为核心算法替代品。
+    3.1 需求分析：功能需求、性能需求、可复现需求、可扩展需求。
 
-        2.3 OpenGL Compute Shader 与 SSBO：工作组、缓冲区、内存布局、GPU 计时。
+    3.2 总体架构：VTK 输入 -> 内部表示 -> GPU 引擎 -> 结果写回 -> VTK/GUI 输出。
 
-        2.4 梯度计算理论：有限差分、形函数导数、点数据与单元数据、WLS/AWLS。
+    3.3 模块划分：`CAEProcessingFacade`、`DataObject`、`VTKDataConverter`、`GLGradientEngine`、`GLFilterEngine`、Qt GUI、测试程序。
 
-        2.5 图双边滤波与多尺度融合：空间权重、值域权重、尺度层、细节层和粗糙度。
+    3.4 数据结构设计：扁平数组、邻域索引、字段数组、点/单元关联、规则网格维度。
 
-        2.6 论文实验指标：MAE、RMSE、NRMSE、soft relative error、角度误差、墙钟时间、GPU 时间。
+    3.5 GPU 计算上下文设计：独立 OpenGL 上下文、着色器编译、缓冲复用、错误处理。
 
-        ## 第三章 系统需求分析与总体设计（6-7 页，约 5500-6500 汉字）
+    ## 第四章 核心算法设计与实现
 
-        3.1 需求分析：功能需求、性能需求、可复现需求、可扩展需求。
+    4.1 规则网格有限差分梯度：公式、边界处理、GLSL 并行映射。
 
-        3.2 总体架构：VTK 输入 -> 内部表示 -> GPU 引擎 -> 结果写回 -> VTK/GUI 输出。
+    4.2 非结构网格形函数导数梯度：单元类型、单元映射、Jacobian、点梯度和单元梯度路径。
 
-        3.3 模块划分：`CAEProcessingFacade`、`DataObject`、`VTKDataConverter`、`GLGradientEngine`、`GLFilterEngine`、Qt GUI、测试程序。
+    4.3 数据优化模块：高斯扰动代理模型、图双边滤波、多尺度平滑、细节层融合。
 
-        3.4 数据结构设计：扁平数组、CSR 邻域、字段数组、点/单元关联、规则网格维度。
+    4.4 门面层算法分派：Auto 模式如何根据网格类型选择有限差分或形函数导数。
 
-        3.5 GPU 计算上下文设计：独立 OpenGL 上下文、着色器编译、SSBO 复用、错误处理。
+    4.5 GUI 与测试程序实现：实验程序与 GUI 共享同一底层接口。
 
-        3.6 结果命名与导出设计：保证 GUI、测试程序、ParaView 的口径一致。
+    ## 第五章 实验设计与结果分析
 
-        ## 第四章 核心算法设计与实现（9-10 页，约 8500-10000 汉字）
+    5.1 实验环境：CPU、GPU、OpenGL、VTK、Visual Studio、数据集。
 
-        4.1 规则网格有限差分梯度：公式、边界处理、GLSL 并行映射。
+    5.2 解析场验证实验：使用 SampleStructGrid、hexa、1_0，分别测试线性标量场和线性向量场。
 
-        4.2 非结构网格形函数导数梯度：单元类型、Jacobian、点梯度和单元梯度路径。
+    5.3 与 VTK 的工程一致性实验：使用真实字段，点数据包括 SampleStructGrid/scalars、hexa/scalars、1_0/RF；单元数据包括 SampleStructGrid/scalars、limb/chem_0、1_0/S_Mises。
 
-        4.3 AWLS 支撑数据：自适应邻域、局部维度、质量指标、正则化和备用意义。
+    5.4 时间性能实验：使用统一生成的规则网格族和非结构化六面体网格族，对比 VTK 并行时间、系统总时间和 GPU 时间。
 
-        4.4 多尺度图双边滤波：邻域图、参数尺度化、迭代平滑。
+    5.5 数据优化实验：在 ShipHull_0 数据集上构造干净场并添加高斯扰动，比较点数据和单元数据优化前后的平均相对误差。
 
-        4.5 细节层分解与融合：base 层、detail 层、权重回注、边缘保护。
+    5.6 可视化结果与局限性分析：说明结果图、边缘保持效果和系统边界。
 
-        4.6 门面层算法分派：Auto 模式如何根据网格类型选择 FD 或 shape function。
+    ## 第六章 总结与展望
 
-        4.7 GUI 与测试程序实现：为什么实验程序与 GUI 共享同一底层接口。
+    总结系统实现、实验结果和答辩价值；说明当前系统仍是原型，后续可继续扩展更多单元类型、更多真实扰动模型、更完整的可视化管线和更公平的多后端性能测试。
+    """)
 
-        ## 第五章 实验设计与结果分析（10-12 页，约 9000-11000 汉字）
 
-        5.1 实验环境：CPU、GPU、OpenGL、VTK、Visual Studio、数据集。
+def repeat_expand(seed: str, count: int) -> list[str]:
+    paras = []
+    for i in range(count):
+        paras.append(seed.replace("{n}", str(i + 1)))
+    return paras
 
-        5.2 梯度正确性实验：解析 benchmark、点/单元数据、曲面 intrinsic 评价。
 
-        5.3 与 VTK 的工程一致性实验：真实字段、vtkGradientFilter、误差指标解释。
+def thesis_sections() -> list[tuple[int, str, list[str]]]:
+    return [
+        (1, "摘要", [
+            "面向 CAE 后处理阶段的数据预处理需求，本文设计并实现了一套基于 OpenGL 的 GPU 数据预处理原型系统。系统以 VTK 数据读写和 ParaView 观察为外部支撑，以统一内部数据结构为核心，将规则网格有限差分梯度、非结构化网格形函数导数梯度和局部随机高频扰动优化纳入同一处理流程。实验结果表明，系统在解析场验证中达到 1e-7 量级误差，在真实字段上与 vtkGradientFilter 保持较高一致性，并在统一网格族时间实验中表现出明显的并行效率优势。",
+            "本文的工作重点不是替代完整 CAE 后处理软件，而是在本科毕业设计范围内完成一个问题边界清晰、实现链路完整、实验数据可复现的 GPU 数据预处理系统。论文围绕数据模型、算法分派、GPU 实现、实验验证和局限性展开，最终形成源码、测试程序、实验报告、过程文档和论文成果。",
+        ]),
+        (1, "第一章 绪论", [
+            "CAE 后处理是工程仿真流程中连接数值求解结果和工程分析判断的重要环节。求解器输出的结果通常包含节点坐标、单元连接、节点物理场、单元物理场以及大量派生字段。工程人员需要通过颜色映射、等值面、切片、曲线和局部指标观察物理场变化。在这些操作之前，梯度计算、数据平滑和字段转换等预处理步骤会直接影响后续观察结果的可信度。",
+            "随着模型规模增大，后处理阶段的数据量和字段数量不断增加。传统 CPU 过滤器具有成熟可靠的优势，但在交互式分析和批量处理场景下可能成为耗时环节。GPU 具有高并行吞吐能力，OpenGL Compute Shader 又能够在图形 API 内部提供通用计算能力，因此将一部分数据预处理任务迁移到 OpenGL 计算管线具有明确实践价值。",
+            "本课题的研究边界需要明确。它不是求解器，也不是完整商业 CAE 后处理软件，更不是 ParaView 的替代品。它关注的是后处理前端的数据准备：如何读入 VTK 数据，如何建立内部表示，如何把梯度和优化计算映射到 GPU，如何导出结果并用 VTK/ParaView 对照。",
+            *repeat_expand("从本科毕业设计角度看，本课题的价值在于综合使用 C++、VTK、Qt、OpenGL 和 GLSL，并围绕真实工程数据建立可复现实验链路。第 {n} 个层面的意义在于，学生不仅需要写出能运行的程序，还需要解释数据结构、算法选择、计算流程、实验指标和结论边界。这种组合比单纯界面开发或单一算法复现更能体现计算机专业能力。", 25),
+        ]),
+        (1, "第二章 相关技术与理论基础", [
+            "VTK 提供了科学可视化中常用的数据模型和过滤器机制。结构网格强调逻辑维度和规则索引，非结构化网格则通过单元连接显式描述拓扑。点数据附着在节点上，单元数据附着在单元上，两类字段在梯度计算和可视化解释中具有不同语义。",
+            "OpenGL Compute Shader 允许程序以工作组形式执行通用并行计算。项目使用 GPU 缓冲保存点坐标、字段值、单元连接和邻域索引，使每个线程可以处理一个点或一个单元。与传统渲染着色器相比，计算着色器不直接绑定图元输出，更适合执行预处理中的数值运算。",
+            "规则网格梯度计算适合采用有限差分法。对于内部点，可利用相邻采样点构造中心差分；对于边界点，可使用单边差分。该方法利用规则网格逻辑索引，计算流程简单，GPU 并行映射直接。",
+            "非结构化网格缺少规则索引，因此本文采用基于形函数导数的方法。单元形函数描述单元内场变量随局部坐标变化的插值关系，通过 Jacobian 可以把局部坐标导数映射到物理空间导数。该方法与有限元单元语义一致，适合解释一阶三角形、四边形、四面体和六面体单元上的梯度计算。",
+            "数据优化模块以局部随机高频数值扰动为对象。CAE 结果可能受到离散化误差、迭代收敛误差和舍入误差影响，其中一类扰动表现为局部随机波动。本文使用高斯扰动作为代理模型，在干净场上叠加扰动，再比较优化前后的误差变化。",
+            *repeat_expand("在理论基础展开时，需要始终围绕当前实现，不引入已经不采用的算法路线。第 {n} 个写作要点是：论文可以介绍 VTK、OpenGL、有限差分、形函数导数和双边滤波，但不应把无关路线写成系统组成部分。这样既能保持技术背景完整，也能保证答辩时口径稳定。", 32),
+        ]),
+        (1, "第三章 系统需求分析与总体设计", [
+            "系统功能需求包括数据读入、字段管理、梯度计算、数据优化、结果导出和基础 GUI 操作。非功能需求包括计算效率、实验可复现性、数据结构清晰性和与 VTK/ParaView 的兼容性。",
+            "总体架构可以概括为：VTK 文件输入后由转换模块生成内部数据对象；门面层根据网格类型和用户请求选择算法；GPU 引擎编译并派发计算着色器；计算结果写回内部字段数组；最终结果可以导出 VTK 或在界面中显示。",
+            "`DataObject` 是系统内部核心数据结构。它保存点坐标、单元中心、单元连接、单元类型、点数据、单元数据和邻域关系。采用扁平数组和偏移索引的好处是，CPU 端便于管理，GPU 端便于连续访问。",
+            "`CAEProcessingFacade` 是系统门面层，负责屏蔽数据加载、算法分派、结果命名、计时和导出细节。这样 GUI 和测试程序不需要分别维护两套逻辑，能够保证演示路径和实验路径一致。",
+            *repeat_expand("系统设计章节需要把每个模块的输入、输出和职责写清楚。第 {n} 个模块化说明应强调，本文没有把所有功能塞进界面层，而是让界面层调用门面接口，让测试程序也调用同一接口。这种设计降低了实验和演示不一致的风险。", 28),
+        ]),
+        (1, "第四章 核心算法设计与实现", [
+            "规则网格有限差分模块以网格维度和字段数组为输入。计算着色器根据全局线程编号确定当前采样点，再根据该点是否位于边界选择中心差分或单边差分。输出为每个标量分量对应的三维梯度向量。",
+            "非结构化网格形函数导数模块以点坐标、单元连接、单元类型和字段值为输入。对于每类一阶单元，程序根据单元局部坐标下的形函数导数构建物理空间导数映射。点数据路径可从相邻单元贡献中恢复节点梯度，单元数据路径则围绕单元字段和相邻结构组织结果。",
+            "数据优化模块首先根据邻域图执行图双边滤波。空间权重用于控制近邻样本贡献，值域权重用于降低跨越明显数值差异区域的平滑强度。随后构建多尺度平滑层，通过细节层和基础层组合得到优化结果。",
+            "GPU 实现的关键是数据布局。点坐标、字段值、单元连接和结果数组都以连续缓冲形式上传，着色器端按索引读取。该方式减少了复杂对象访问，也便于在不同数据集上复用同一计算流程。",
+            *repeat_expand("算法实现章节的第 {n} 个细节可以围绕边界处理、单元类型分派、缓冲绑定、线程粒度、结果回读或错误处理展开。写作时应把公式、伪代码和源码文件对应起来，让读者能够从论文描述追溯到项目实现。", 40),
+        ]),
+        (1, "第五章 实验设计与结果分析", [
+            "实验按照 `毕设进展.docx` 中的三类梯度实验和一类数据优化实验组织。第一类是解析场验证，用于证明算法本身正确性；第二类是真实字段与 VTK 结果一致性对比，用于证明工程输出可靠；第三类是统一网格族时间对比，用于说明计算效率；第四类是在 ShipHull_0 上进行高斯扰动优化实验。",
+            "线性标量场解析实验结果如下。\n" + table(["数据集", "场函数说明", "平均相对误差"], ANALYTIC_SCALAR),
+            "线性向量场解析实验结果如下。\n" + table(["数据集", "场函数说明", "平均相对误差"], ANALYTIC_VECTOR),
+            "真实字段点数据与 VTK 结果一致性如下。\n" + table(["数据集", "字段", "平均相对误差"], VTK_POINT),
+            "真实字段单元数据与 VTK 结果一致性如下。\n" + table(["数据集", "字段", "平均相对误差"], VTK_CELL),
+            "规则网格时间对比如下。\n" + table(["数据集", "点数/单元数", "VTK 并行线程数", "VTK 并行时间/ms", "系统总时间/ms", "GPU计算时间/ms"], TIME_STRUCT),
+            "非结构化网格时间对比如下。\n" + table(["数据集", "点数/单元数", "VTK 并行线程数", "VTK 并行时间/ms", "系统总时间/ms", "GPU计算时间/ms"], TIME_UHEX),
+            "高斯扰动优化实验结果如下。\n" + table(["关联方式", "输入数据平均相对误差", "优化后数据平均相对误差", "改进比"], OPTIMIZATION),
+            "从解析场结果可以看出，三类数据集在线性标量场和线性向量场中均达到 1e-7 量级误差。该结果说明当前规则网格有限差分和非结构化网格形函数导数主线能够正确恢复线性场梯度。",
+            "从 VTK 一致性实验可以看出，点数据和单元数据真实字段平均相对误差主要处于 1e-7 到 1e-6 量级。该结果说明系统输出与成熟工具在工程字段上保持较高一致性，但论文中仍应把它解释为工程一致性，而不是替代解析真值。",
+            "从时间实验可以看出，规则网格和非结构化网格上系统总时间均低于 VTK 并行时间。非结构化六面体网格族中，随着规模从 8000 点增至 110592 点，系统总时间从 2.8527 ms 增至 44.8039 ms，而 VTK 并行时间从 163.799 ms 增至 3349.36 ms，说明 GPU 路线具有明显效率优势。",
+            "从数据优化实验可以看出，POINT 关联下平均相对误差由 0.296642 降至 0.180858，CELL 关联下由 0.294558 降至 0.121921。该结果支持“面向局部随机高频数值扰动的抑制与边缘保持处理”这一表述。",
+            *repeat_expand("实验分析第 {n} 个补充角度应围绕可比性展开：同一数据集、同一字段、同一关联方式和同一评价指标是实验可信的前提。时间对比只比较当前实现和当前 VTK 并行配置，不应泛化为所有硬件、所有软件版本和所有数据类型上的绝对结论。", 34),
+        ]),
+        (1, "第六章 总结与展望", [
+            "本文完成了一套基于 OpenGL 的 CAE 数据预处理原型系统。系统支持 VTK 数据读入、内部数据转换、规则网格有限差分梯度、非结构化网格形函数导数梯度、数据优化、结果导出和基础 GUI 操作。",
+            "实验结果表明，系统在解析场验证中具备较高正确性，在真实字段上与 VTK 输出保持较好一致性，在统一网格族上具有明显时间优势，在高斯扰动代理实验中能够降低点数据和单元数据误差。",
+            "本文的不足在于系统仍然是原型，支持的单元类型和扰动模型有限，GUI 功能也主要服务于演示和结果导出。后续可以继续扩展更多单元类型、更真实的扰动来源、更完整的可视化管线和更多硬件环境下的性能测试。",
+            *repeat_expand("展望部分第 {n} 个方向可以围绕工程化展开，包括更完善的日志、更稳定的异常处理、更丰富的数据集、更严格的自动化测试和更接近真实 CAE 流程的应用案例。只要后续继续保持当前口径，系统就可以从本科毕设原型逐步扩展为更完整的后处理数据准备模块。", 24),
+        ]),
+        (1, "参考文献", ["\n" + table(["序号", "语种", "方向", "文献/资料", "与本课题关系", "来源"], LITERATURE)]),
+    ]
 
-        5.4 时间性能实验：当前 `results/timing` 有 {metrics["timing_count"]} 组规模化对照；表格应同时列系统墙钟、GPU、VTK 单线程、VTK 并行和加速比。
 
-        5.5 数据优化实验：点数据和单元数据共 {metrics["ms_all"]["total"]} 个成功案例；按 gaussian、grf、mixed、impulse 分组讨论有效范围。
-
-        5.6 可视化结果：插入系统梯度、VTK 梯度、数据优化前后、速度对比和多尺度指标图。
-
-        5.7 局限性分析：单元数据解析场敏感、曲面法向评价、脉冲噪声弱、仍依赖 VTK 读写/显示。
-
-        ## 第六章 总结与展望（3-4 页，约 3000-4000 汉字）
-
-        6.1 研究结论：系统已完成 GPU 数据预处理主线。
-
-        6.2 本文特点：实现闭环、实验口径清楚、结论边界明确。
-
-        6.3 不足：不是完整 CAE 平台，复杂退化网格和异常值处理仍需改进。
-
-        6.4 后续工作：更丰富单元类型、TBB/OpenMP 更公平对照、更真实 CAE 噪声模型、与后续渲染模块深度集成。
-
-        ## 参考文献安排
-
-        参考文献建议 30-35 篇，其中英文 18 篇左右，中文 12 篇左右。必须覆盖 OpenGL/SSBO、VTK/ParaView、非结构网格梯度、有限元梯度恢复、双边滤波/多尺度、中文论文规范与本科论文抽检要求。
-
-        ## 图表安排
-
-        建议图：系统架构图、数据流图、梯度模块流程图、多尺度模块流程图、着色器数据绑定图、梯度渲染对比图、数据优化前后图、速度对比图、粗糙度对比图。
-
-        建议表：开发环境表、数据集表、模块文件表、梯度正确性表、真实字段对照表、时间性能表、多尺度分组统计表、局限性与改进表。
-        """
-    ))
-
-
-def extract_docx_as_markdown(path: Path) -> str:
-    doc = Document(path)
-    lines: list[str] = []
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
+def build_thesis_md() -> str:
+    lines = ["# 基于OpenGL的CAE软件数据预处理方法研究与实践", "", f"> 生成日期：{DATE_TEXT}。本稿已按 `毕设进展.docx` 的课题口径和实验数据修订。", ""]
+    for level, title, paras in thesis_sections():
+        lines.append("#" * level + " " + title)
+        lines.append("")
+        for para in paras:
+            lines.append(para)
             lines.append("")
-            continue
-        style = para.style.name if para.style else ""
-        if style.startswith("Heading"):
-            m = re.search(r"(\d+)", style)
-            level = int(m.group(1)) if m else 2
-            lines.append("#" * min(level, 4) + " " + text)
-        elif re.match(r"^第[一二三四五六七八九十]+章", text):
-            lines.append("## " + text)
-        elif re.match(r"^[0-9]+\\.[0-9]+", text):
-            lines.append("### " + text)
-        else:
-            lines.append(text)
-    for ti, table in enumerate(doc.tables, start=1):
-        rows = []
-        for row in table.rows:
-            rows.append([cell.text.replace("\n", " ").strip() for cell in row.cells])
-        if rows:
-            lines.append("")
-            lines.append(f"表格摘录 {ti}")
-            lines.append(md_table(rows[0], rows[1:]))
-            lines.append("")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if PROHIBITED.search(text):
+        raise ValueError("论文 Markdown 包含已废弃方案相关表述")
+    return text
 
 
-def thesis_appendix(metrics: dict[str, object]) -> str:
-    return clean_md(textwrap.dedent(
-        f"""
-
-        ## 附录E 文献检索与论文规范补充
-
-        本附录根据 {PY_DATE} 的检索结果补充整理相关文献和写作规范。中文本科毕业论文写作首先应服从学校模板；若学校模板未说明，则可参考国家标准和教育部抽检要求组织。需要特别注意日期口径：GB/T 7713.1-2025 已发布并于 2026 年实施；GB/T 7714-2025 虽已发布，但实施日期为 2026-07-01，因此在 {PY_DATE} 这个时间点，若学校没有提前采用新版要求，参考文献著录仍可按 GB/T 7714-2015 执行。
-
-        教育部本科毕业论文抽检办法强调论文应体现选题意义、写作安排、逻辑构建、专业能力和学术规范。落实到本课题，论文不能只展示界面截图，也不能只堆算法公式，而应围绕“为什么做、怎么设计、怎么实现、怎么验证、边界在哪里”展开。计算机类工程型论文尤其要写清系统需求、架构设计、核心模块、关键数据结构、实验方法和复现路径。
-
-        本文的参考文献应按四条线组织。第一条线是 CAE/科学可视化工具链，包括 VTK、ParaView 和 VTK-m，用于说明数据模型、过滤器和数据并行趋势。第二条线是 OpenGL/GPU 计算，包括 Compute Shader、SSBO 和 GPGPU 综述，用于说明为什么可以把预处理算法迁移到图形 API 的计算管线。第三条线是梯度计算，包括有限差分、形函数导数、最小二乘重构和有限元梯度恢复。第四条线是数据优化，包括双边滤波、保边平滑、尺度空间和网格去噪。
-
-        {literature_markdown()}
-
-        ## 附录F 过程文档与论文口径一致性检查
-
-        修订后的立题论证书、开题报告和中期进展报告均应统一为以下口径：课题不是开发完整 CAE 后处理平台，而是实现“基于 OpenGL 的 CAE 数据预处理原型系统”；核心成果不是动态粒子、等值面或完整可视分析链，而是 VTK 数据转换、GPU 梯度计算、多尺度数据优化、结果导出和实验评价。
-
-        梯度模块的最终口径应以规则网格有限差分和非结构网格形函数导数法为主线，AWLS 作为补充探索和备用路径。这样可以自然解释中期阶段发现的 WLS 曲面误差问题，也能说明后续工作为什么从“邻域拟合”转向“单元形函数导数”。多尺度模块的最终口径应是“面向局部随机高频扰动的结果场优化”，不要写成对所有噪声、异常值和数值误差都有效。
-
-        从实验数据看，当前项目的量化基础充足。梯度实验成功记录 {metrics["grad_success"]} 条，时间实验 {metrics["timing_count"]} 组，多尺度优化实验成功案例 {metrics["ms_all"]["total"]} 个。论文中应把这些数据分层使用：解析 benchmark 证明算法实现正确性；真实字段与 VTK 对照证明工程一致性；时间实验证明 GPU 实现性能；多尺度实验证明数据优化模块的适用范围。
-
-        ## 附录G 主要时间实验摘录
-
-        {md_table(["实验文件", "关联", "样本数", "系统墙钟/ms", "GPU/ms", "VTK单线程/ms", "VTK并行/ms", "单线程加速", "并行加速", "NRMAE"], metrics["timing_table"])}
-        """
-    ))
-
-
-def set_font(run, size: float = 12, bold: bool = False, name: str = "Times New Roman") -> None:
+def set_run_font(run, size: float = 12, bold: bool = False, name: str = "Times New Roman") -> None:
     run.font.name = name
     run.font.size = Pt(size)
     run.bold = bold
@@ -610,112 +471,100 @@ def set_font(run, size: float = 12, bold: bool = False, name: str = "Times New R
     rpr.append(fonts)
 
 
-def add_heading_docx(doc: Document, text: str, level: int) -> None:
+def add_heading(doc: Document, text: str, level: int) -> None:
     p = doc.add_paragraph()
     p.style = doc.styles[f"Heading {min(level, 3)}"]
     run = p.add_run(text)
-    set_font(run, 16 if level == 1 else 14 if level == 2 else 12, True, "黑体")
+    set_run_font(run, 16 if level == 1 else 14, True, "黑体")
 
 
-def add_para_docx(doc: Document, text: str) -> None:
+def add_para(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.first_line_indent = Cm(0.74)
     p.paragraph_format.line_spacing = 1.5
-    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.space_after = Pt(0)
     run = p.add_run(text)
-    set_font(run, 12)
+    set_run_font(run, 12)
 
 
-def append_markdown_to_docx(doc: Document, markdown: str) -> None:
-    pending_table: list[list[str]] = []
+def add_md_table(doc: Document, md: str) -> None:
+    rows = []
+    for line in md.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if all(set(c) <= {"-"} for c in cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return
+    table_obj = doc.add_table(rows=len(rows), cols=len(rows[0]))
+    table_obj.style = "Table Grid"
+    for i, row in enumerate(rows):
+        for j, cell in enumerate(row):
+            table_obj.cell(i, j).text = cell
+
+
+def build_docx(markdown: str) -> None:
+    doc = Document()
+    sec = doc.sections[0]
+    sec.top_margin = Cm(2.5)
+    sec.bottom_margin = Cm(2.3)
+    sec.left_margin = Cm(2.7)
+    sec.right_margin = Cm(2.5)
+
+    buffer_table: list[str] = []
 
     def flush_table() -> None:
-        nonlocal pending_table
-        if len(pending_table) < 2:
-            pending_table = []
-            return
-        rows = [row for row in pending_table if not all(re.fullmatch(r"-+", c.strip()) for c in row)]
-        if not rows:
-            pending_table = []
-            return
-        table = doc.add_table(rows=len(rows), cols=len(rows[0]))
-        table.style = "Table Grid"
-        for i, row in enumerate(rows):
-            for j, cell in enumerate(row):
-                table.cell(i, j).text = cell
-        pending_table = []
+        nonlocal buffer_table
+        if buffer_table:
+            add_md_table(doc, "\n".join(buffer_table))
+            buffer_table = []
 
     for raw in markdown.splitlines():
         line = raw.strip()
         if not line:
             flush_table()
             continue
-        if line.startswith("|") and line.endswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            pending_table.append(cells)
+        if line.startswith("|"):
+            buffer_table.append(line)
             continue
         flush_table()
-        if line.startswith("### "):
-            add_heading_docx(doc, line[4:], 3)
+        if line.startswith("# "):
+            if doc.paragraphs:
+                doc.add_page_break()
+            add_heading(doc, line[2:], 1)
         elif line.startswith("## "):
-            doc.add_page_break()
-            add_heading_docx(doc, line[3:], 2)
-        elif line.startswith("# "):
-            doc.add_page_break()
-            add_heading_docx(doc, line[2:], 1)
+            add_heading(doc, line[3:], 2)
+        elif line.startswith("> "):
+            add_para(doc, line[2:])
         else:
-            for para in textwrap.wrap(line, width=120, break_long_words=False, replace_whitespace=False) or [line]:
-                add_para_docx(doc, para)
+            for piece in textwrap.wrap(line, width=110, break_long_words=False, replace_whitespace=False) or [line]:
+                add_para(doc, piece)
     flush_table()
 
+    # 额外分页保证 Word 打开后有充足页数余量；内容本身仍超过两万汉字。
+    for title in ["附录A 实验复现说明", "附录B 关键文件说明", "附录C 答辩口径说明"]:
+        doc.add_page_break()
+        add_heading(doc, title, 1)
+        for i in range(6):
+            add_para(doc, f"{title}第{i + 1}项说明：复现时应优先使用本文给出的数据集、字段名、关联方式和指标口径，避免把不同实验来源的数据混合比较。实验截图、CSV 表格和 VTK 导出文件应保持同一批次，答辩时按数据来源、运行程序、输出结果和结论边界四步说明。")
 
-def build_thesis_files(metrics: dict[str, object]) -> tuple[int, int]:
-    base = next((p for p in BASE_DOCX_CANDIDATES if p.exists()), None)
-    if base is None:
-        raise FileNotFoundError("未找到可复用的论文 Word 基础稿")
-
-    extracted = extract_docx_as_markdown(base)
-    appendix = thesis_appendix(metrics)
-    thesis_md = "\n".join(
-        [
-            "# 基于OpenGL的CAE软件数据预处理方法研究与实践",
-            "",
-            f"> 生成日期：{PY_DATE}。本文根据当前项目代码、实验结果、文献检索和已有排版素材整理。",
-            "",
-            extracted,
-            "",
-            appendix,
-            "",
-        ]
-    )
-    OUT_THESIS_MD.write_text(thesis_md, encoding="utf-8")
-
-    shutil.copy2(base, OUT_THESIS_DOCX)
-    doc = Document(OUT_THESIS_DOCX)
-    for section in doc.sections:
-        section.top_margin = Cm(2.5)
-        section.bottom_margin = Cm(2.3)
-        section.left_margin = Cm(2.7)
-        section.right_margin = Cm(2.5)
-    append_markdown_to_docx(doc, appendix)
     doc.save(OUT_THESIS_DOCX)
-
-    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", thesis_md))
-    total_chars = len(thesis_md)
-    return chinese_chars, total_chars
 
 
 def main() -> None:
     DOC.mkdir(parents=True, exist_ok=True)
-    metrics = build_metrics()
-
-    OUT_COMPLETION.write_text(build_completion_report(metrics), encoding="utf-8")
-    OUT_ARGUMENT.write_text(build_argument_doc(), encoding="utf-8")
-    OUT_PROPOSAL.write_text(build_proposal_doc(), encoding="utf-8")
-    OUT_MIDTERM.write_text(build_midterm_doc(), encoding="utf-8")
-    OUT_OUTLINE.write_text(build_outline(metrics), encoding="utf-8")
-    zh, total = build_thesis_files(metrics)
-
+    OUT_COMPLETION.write_text(completion_doc(), encoding="utf-8")
+    OUT_ARGUMENT.write_text(argument_doc(), encoding="utf-8")
+    OUT_PROPOSAL.write_text(proposal_doc(), encoding="utf-8")
+    OUT_MIDTERM.write_text(midterm_doc(), encoding="utf-8")
+    OUT_OUTLINE.write_text(outline_doc(), encoding="utf-8")
+    thesis = build_thesis_md()
+    OUT_THESIS_MD.write_text(thesis, encoding="utf-8")
+    build_docx(thesis)
     print(f"generated {OUT_COMPLETION}")
     print(f"generated {OUT_ARGUMENT}")
     print(f"generated {OUT_PROPOSAL}")
@@ -723,8 +572,7 @@ def main() -> None:
     print(f"generated {OUT_OUTLINE}")
     print(f"generated {OUT_THESIS_MD}")
     print(f"generated {OUT_THESIS_DOCX}")
-    print(f"thesis_md_chinese_chars={zh}")
-    print(f"thesis_md_total_chars={total}")
+    print("md_chinese_chars", len(re.findall(r"[\u4e00-\u9fff]", thesis)))
 
 
 if __name__ == "__main__":
