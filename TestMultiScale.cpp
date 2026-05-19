@@ -34,11 +34,11 @@ struct Options
 {
     std::string file="ShipHull_0";
     std::string path = "Data\\"+file+".vtk";
-    CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
+    CAEFieldAssociation assoc = CAEFieldAssociation::Point;
     RunMode runMode = RunMode::Synthetic;
     std::string arrayName;
     std::string nameFilter;
-    std::string noiseMode = "all";
+    std::string noiseMode = "gaussian";
     int reps = 3;
     int levels = 3;
     int iterations = 1;
@@ -46,8 +46,8 @@ struct Options
     bool listFields = false;
     bool listSynthetic = false;
     bool showConfig = false;
-    std::string csvPath = "results\\multiscale_report+cell.csv";
-    std::string exportPath="results\\multiscale"+file+"cell.vtk";
+    std::string csvPath = "results\\multiscale_report+point0.15.csv";
+    std::string exportPath="results\\multiscale"+file+"point0.15.vtk";
 
     float spatialSigmaFactor = 1.5f;
     float rangeSigmaFactor = 0.5f;
@@ -57,7 +57,7 @@ struct Options
     float detailGain1 = 0.75f;
     float detailGain2 = 0.5f;
 
-    float sigmaFactor = 0.35f;
+    float sigmaFactor = 0.15f;
     float corrLengthFactor = 1.0f;
     int corrIters = 4;
     float corrAlpha = 0.8f;

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="880" viewBox="0 0 1500 880">
+<rect x="0" y="0" width="1500" height="880" fill="rgb(255,255,255)" />
+<line x1="180" y1="670" x2="1190" y2="670" stroke="rgb(20,20,20)" stroke-width="2" />
+<line x1="180" y1="170" x2="180" y2="670" stroke="rgb(20,20,20)" stroke-width="2" />
+<text x="180.0" y="92.0" text-anchor="start" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="25" fill="rgb(20,20,20)">结构化网格点数据</text>
+<text x="70.0" y="125.0" text-anchor="start" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="21" fill="rgb(20,20,20)">时间 / ms</text>
+<line x1="174" y1="670" x2="180" y2="670" stroke="rgb(20,20,20)" stroke-width="2" />
+<line x1="180" y1="670" x2="1190" y2="670" stroke="rgb(230,230,230)" stroke-width="1" />
+<text x="122.0" y="676.0" text-anchor="end" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">1e-1</text>
+<line x1="174" y1="420" x2="180" y2="420" stroke="rgb(20,20,20)" stroke-width="2" />
+<line x1="180" y1="420" x2="1190" y2="420" stroke="rgb(230,230,230)" stroke-width="1" />
+<text x="122.0" y="426.0" text-anchor="end" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">1e0</text>
+<line x1="174" y1="170" x2="180" y2="170" stroke="rgb(20,20,20)" stroke-width="2" />
+<line x1="180" y1="170" x2="1190" y2="170" stroke="rgb(230,230,230)" stroke-width="1" />
+<text x="122.0" y="176.0" text-anchor="end" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">1e1</text>
+<text x="348.3" y="714.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">8000</text>
+<text x="685.0" y="714.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">32768</text>
+<text x="1021.7" y="714.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">110592</text>
+<polyline points="348.3,309.0 685.0,282.0 1021.7,190.0" fill="none" stroke="rgb(20,20,20)" stroke-width="4" />
+<polyline points="348.3,431.0 685.0,380.0 1021.7,266.0" fill="none" stroke="rgb(78,111,155)" stroke-width="4" />
+<circle cx="348.3" cy="309.0" r="7" fill="rgb(20,20,20)" />
+<circle cx="685.0" cy="282.0" r="7" fill="rgb(20,20,20)" />
+<circle cx="1021.7" cy="190.0" r="7" fill="rgb(20,20,20)" />
+<rect x="341.3" y="424.0" width="14" height="14" fill="rgb(255,255,255)" stroke="rgb(78,111,155)" stroke-width="3" />
+<rect x="678.0" y="373.0" width="14" height="14" fill="rgb(255,255,255)" stroke="rgb(78,111,155)" stroke-width="3" />
+<rect x="1014.7" y="259.0" width="14" height="14" fill="rgb(255,255,255)" stroke="rgb(78,111,155)" stroke-width="3" />
+<text x="348.3" y="289.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">2.7573</text>
+<text x="685.0" y="262.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">3.5564</text>
+<text x="1021.7" y="170.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(20,20,20)">8.2716</text>
+<text x="348.3" y="464.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(78,111,155)">0.9036</text>
+<text x="685.0" y="413.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(78,111,155)">1.4336</text>
+<text x="1021.7" y="299.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="18" fill="rgb(78,111,155)">4.0996</text>
+<text x="685.0" y="766.0" text-anchor="middle" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="21" fill="rgb(20,20,20)">点数</text>
+<line x1="1260" y1="240" x2="1330" y2="240" stroke="rgb(20,20,20)" stroke-width="4" />
+<circle cx="1296" cy="240" r="7" fill="rgb(20,20,20)" />
+<text x="1352.0" y="250.0" text-anchor="start" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="21" fill="rgb(20,20,20)">VTK 时间</text>
+<line x1="1260" y1="305" x2="1330" y2="305" stroke="rgb(78,111,155)" stroke-width="4" />
+<rect x="1289" y="298" width="14" height="14" fill="rgb(255,255,255)" stroke="rgb(78,111,155)" stroke-width="3" />
+<text x="1352.0" y="315.0" text-anchor="start" font-family="'Noto Serif SC','Noto Sans CJK SC','SimSun','Microsoft YaHei',serif" font-size="21" fill="rgb(20,20,20)">系统总时间</text>
+</svg>

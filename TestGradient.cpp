@@ -151,11 +151,11 @@ enum class VtkBackendMode
 // 3. CSV 报告记录当前实验条件。
 struct Options
 {
-    std::string file="timing_struct_20x20x20";
+    std::string file="timing_struct_48x48x48";
     std::string path = "Data\\timing\\"+file+".vtk";
     CAEFieldAssociation assoc = CAEFieldAssociation::Cell;
     std::string arrayName;
-    int reps = 1;
+    int reps = 10;
     bool enableAnalyticBenchmarks = false;
     ReferenceMode referenceMode = ReferenceMode::Auto;
     ResultSource resultSource = ResultSource::Gl;
